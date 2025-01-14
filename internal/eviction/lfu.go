@@ -108,7 +108,6 @@ func (cache *CacheLFU) Pop() any {
 }
 
 func (cache *CacheLFU) Update(key string) {
-
 	// If the key is not contained in the cache, push it.
 	if !cache.contains(key) {
 		heap.Push(cache, key)

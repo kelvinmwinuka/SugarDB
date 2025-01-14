@@ -57,6 +57,9 @@ type SugarDB struct {
 	// config holds the SugarDB configuration variables.
 	config config.Config
 
+	// The event queue which handles SugarDB events.
+	eventQueue *eventQueue
+
 	// The current index for the latest connection id.
 	// This number is incremented everytime there's a new connection and
 	// the new number is the new connection's ID.
@@ -136,9 +139,10 @@ type SugarDB struct {
 // This functions accepts the WithContext, WithConfig and WithCommands options.
 func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	sugarDB := &SugarDB{
-		clock:   clock.NewClock(),
-		context: context.Background(),
-		config:  config.DefaultConfig(),
+		clock:      clock.NewClock(),
+		context:    context.Background(),
+		config:     config.DefaultConfig(),
+		eventQueue: newEventQueue(),
 		connInfo: struct {
 			mut        *sync.RWMutex
 			tcpClients map[*net.Conn]internal.ConnectionInfo
@@ -205,6 +209,35 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 
 	// Set up Pub/Sub module
 	sugarDB.pubSub = pubsub.NewPubSub()
+
+	// TODO: Delete this test implementation of event queues
+	{
+		sugarDB.eventQueue.enqueue(event{
+			priority: event_priority_medium,
+			kind:     event_kind_command,
+			time:     time.Now(),
+		})
+		sugarDB.eventQueue.enqueue(event{
+			priority: event_priority_medium,
+			kind:     event_kind_command,
+			time:     time.Now(),
+		})
+		sugarDB.eventQueue.enqueue(event{
+			priority: event_priority_high,
+			kind:     event_kind_delete_key,
+			time:     time.Now(),
+		})
+		sugarDB.eventQueue.enqueue(event{
+			priority: event_priority_medium,
+			kind:     event_kind_command,
+			time:     time.Now(),
+		})
+		sugarDB.eventQueue.enqueue(event{
+			priority: event_priority_high,
+			kind:     event_kind_delete_key,
+			time:     time.Now(),
+		})
+	}
 
 	if sugarDB.isInCluster() {
 		sugarDB.raft = raft.NewRaft(raft.Opts{
