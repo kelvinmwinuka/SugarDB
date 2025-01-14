@@ -25,6 +25,7 @@ import (
 	"github.com/echovault/sugardb/internal/clock"
 	"github.com/echovault/sugardb/internal/config"
 	"github.com/echovault/sugardb/internal/constants"
+	"github.com/echovault/sugardb/internal/events"
 	"github.com/echovault/sugardb/internal/eviction"
 	"github.com/echovault/sugardb/internal/memberlist"
 	"github.com/echovault/sugardb/internal/modules/acl"
@@ -58,7 +59,7 @@ type SugarDB struct {
 	config config.Config
 
 	// The event queue which handles SugarDB events.
-	eventQueue *eventQueue
+	eventQueue *events.EventQueue
 
 	// The current index for the latest connection id.
 	// This number is incremented everytime there's a new connection and
@@ -139,10 +140,9 @@ type SugarDB struct {
 // This functions accepts the WithContext, WithConfig and WithCommands options.
 func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	sugarDB := &SugarDB{
-		clock:      clock.NewClock(),
-		context:    context.Background(),
-		config:     config.DefaultConfig(),
-		eventQueue: newEventQueue(),
+		clock:   clock.NewClock(),
+		context: context.Background(),
+		config:  config.DefaultConfig(),
 		connInfo: struct {
 			mut        *sync.RWMutex
 			tcpClients map[*net.Conn]internal.ConnectionInfo
@@ -190,6 +190,12 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 		option(sugarDB)
 	}
 
+	// Setup event queue
+	eventQueue := events.NewEventQueue(
+		events.WithCommandHandlerFunc(sugarDB.handleCommand),
+	)
+	sugarDB.eventQueue = eventQueue
+
 	sugarDB.context = context.WithValue(
 		sugarDB.context, "ServerID",
 		internal.ContextServerID(sugarDB.config.ServerID),
@@ -209,35 +215,6 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 
 	// Set up Pub/Sub module
 	sugarDB.pubSub = pubsub.NewPubSub()
-
-	// TODO: Delete this test implementation of event queues
-	{
-		sugarDB.eventQueue.enqueue(event{
-			priority: event_priority_medium,
-			kind:     event_kind_command,
-			time:     time.Now(),
-		})
-		sugarDB.eventQueue.enqueue(event{
-			priority: event_priority_medium,
-			kind:     event_kind_command,
-			time:     time.Now(),
-		})
-		sugarDB.eventQueue.enqueue(event{
-			priority: event_priority_high,
-			kind:     event_kind_delete_key,
-			time:     time.Now(),
-		})
-		sugarDB.eventQueue.enqueue(event{
-			priority: event_priority_medium,
-			kind:     event_kind_command,
-			time:     time.Now(),
-		})
-		sugarDB.eventQueue.enqueue(event{
-			priority: event_priority_high,
-			kind:     event_kind_delete_key,
-			time:     time.Now(),
-		})
-	}
 
 	if sugarDB.isInCluster() {
 		sugarDB.raft = raft.NewRaft(raft.Opts{
@@ -505,7 +482,7 @@ func (server *SugarDB) handleConnection(conn net.Conn) {
 		server.acl.RegisterConnection(&conn)
 	}
 
-	w, r := io.Writer(conn), io.Reader(conn)
+	r := io.Reader(conn)
 
 	// Generate connection ID
 	cid := server.connId.Add(1)
@@ -543,47 +520,25 @@ func (server *SugarDB) handleConnection(conn net.Conn) {
 			break
 		}
 
-		res, err := server.handleCommand(ctx, message, &conn, false, false)
-		if err != nil && errors.Is(err, io.EOF) {
+		// If the message is empty, break the loop
+		// an empty message will be read when the client runs the "quit" command.
+		if len(message) == 0 {
 			break
 		}
-		if err != nil {
-			log.Println(err)
-			if _, err = w.Write([]byte(fmt.Sprintf("-Error %s\r\n", err.Error()))); err != nil {
-				log.Println(err)
-			}
-			continue
-		}
 
-		chunkSize := 1024
-
-		// If the length of the response is 0, return nothing to the client.
-		if len(res) == 0 {
-			continue
-		}
-
-		if len(res) <= chunkSize {
-			_, _ = w.Write(res)
-			continue
-		}
-
-		// If the response is large, send it in chunks.
-		startIndex := 0
-		for {
-			// If the current start index is less than chunkSize from length, return the remaining bytes.
-			if len(res)-1-startIndex < chunkSize {
-				_, err = w.Write(res[startIndex:])
-				if err != nil {
-					log.Println(err)
-				}
-				break
-			}
-			n, _ := w.Write(res[startIndex : startIndex+chunkSize])
-			if n < chunkSize {
-				break
-			}
-			startIndex += chunkSize
-		}
+		// Add this command to the event queue
+		server.eventQueue.Enqueue(events.Event{
+			Kind:     events.EVENT_KIND_COMMAND,
+			Priority: events.EVENT_PRIORITY_MEDIUM,
+			Time:     time.Now(),
+			Args: events.CommandEventArgs{
+				Ctx:      ctx,
+				Message:  message,
+				Conn:     &conn,
+				Replay:   false,
+				Embedded: false,
+			},
+		})
 	}
 }
 

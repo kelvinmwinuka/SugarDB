@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 
@@ -133,11 +132,6 @@ func (server *SugarDB) handleCommand(ctx context.Context, message []byte, conn *
 
 	if len(cmd) == 0 {
 		return nil, errors.New("empty command")
-	}
-
-	// If quit command is passed, EOF error.
-	if strings.EqualFold(cmd[0], "quit") {
-		return nil, io.EOF
 	}
 
 	command, err := server.getCommand(cmd[0])
