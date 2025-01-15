@@ -204,7 +204,7 @@ func handleLTrim(params internal.HandlerFuncParams) ([]byte, error) {
 
 	// If start index is greater than end index or greater than the index of the last element, delete the key.
 	if start > end || start > len(list)-1 {
-		if err = params.DeleteKey(params.Context, key); err != nil {
+		if err = params.DeleteKeys(params.Context, []string{key}); err != nil {
 			return nil, err
 		}
 		return []byte(constants.OkResponse), nil

@@ -17,10 +17,12 @@ package memberlist
 import (
 	"context"
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/config"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +44,7 @@ type Opts struct {
 	RemoveRaftServer func(meta NodeMeta) error
 	IsRaftLeader     func() bool
 	ApplyMutate      func(ctx context.Context, cmd []string) ([]byte, error)
-	ApplyDeleteKey   func(ctx context.Context, key string) error
+	ApplyDeleteKeys  func(ctx context.Context, keys []string) error
 }
 
 type MemberList struct {
@@ -69,12 +71,12 @@ func (m *MemberList) MemberListInit(ctx context.Context) {
 	cfg.BindAddr = m.options.Config.BindAddr
 	cfg.BindPort = int(m.options.Config.DiscoveryPort)
 	cfg.Delegate = NewDelegate(DelegateOpts{
-		config:         m.options.Config,
-		broadcastQueue: m.broadcastQueue,
-		addVoter:       m.options.AddVoter,
-		isRaftLeader:   m.options.IsRaftLeader,
-		applyMutate:    m.options.ApplyMutate,
-		applyDeleteKey: m.options.ApplyDeleteKey,
+		config:          m.options.Config,
+		broadcastQueue:  m.broadcastQueue,
+		addVoter:        m.options.AddVoter,
+		isRaftLeader:    m.options.IsRaftLeader,
+		applyMutate:     m.options.ApplyMutate,
+		applyDeleteKeys: m.options.ApplyDeleteKeys,
 	})
 	cfg.Events = NewEventDelegate(EventDelegateOpts{
 		incrementNodes: func() {
@@ -136,14 +138,15 @@ func (m *MemberList) broadcastRaftAddress() {
 	m.broadcastQueue.QueueBroadcast(&msg)
 }
 
-// The ForwardDeleteKey function is only called by non-leaders.
+// The ForwardDeleteKeys function is only called by non-leaders.
 // It uses the broadcast queue to forward a key eviction command within the cluster.
-func (m *MemberList) ForwardDeleteKey(ctx context.Context, key string) {
+func (m *MemberList) ForwardDeleteKeys(ctx context.Context, keys []string) {
+	bContent, _ := json.Marshal(keys)
 	connId, _ := ctx.Value(internal.ContextConnID("ConnectionID")).(string)
 	m.broadcastQueue.QueueBroadcast(&BroadcastMessage{
-		Action:      "DeleteKey",
-		Content:     []byte(key),
-		ContentHash: md5.Sum([]byte(key)),
+		Action:      "DeleteKeys",
+		Content:     bContent,
+		ContentHash: md5.Sum([]byte(strings.Join(keys, ","))),
 		ConnId:      connId,
 		NodeMeta: NodeMeta{
 			ServerID: raft.ServerID(m.options.Config.ServerID),

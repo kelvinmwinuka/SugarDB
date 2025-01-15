@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -159,18 +158,22 @@ func handleDel(params internal.HandlerFuncParams) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Get count of existing keys from the provided list of keys
 	count := 0
-	for key, exists := range params.KeysExist(params.Context, keys.WriteKeys) {
+	for _, exists := range params.KeysExist(params.Context, keys.WriteKeys) {
 		if !exists {
-			continue
-		}
-		err = params.DeleteKey(params.Context, key)
-		if err != nil {
-			log.Printf("could not delete key %s due to error: %+v\n", key, err)
 			continue
 		}
 		count += 1
 	}
+
+	// Batch delete the keys
+	err = params.DeleteKeys(params.Context, keys.WriteKeys)
+	if err != nil {
+		return nil, fmt.Errorf("could not delete keys %+v due to error: %+v\n", keys.WriteKeys, err)
+	}
+
 	return []byte(fmt.Sprintf(":%d\r\n", count)), nil
 }
 
@@ -670,7 +673,7 @@ func handleRename(params internal.HandlerFuncParams) ([]byte, error) {
 	}
 
 	// Delete the old key
-	if err := params.DeleteKey(params.Context, oldKey); err != nil {
+	if err := params.DeleteKeys(params.Context, []string{oldKey}); err != nil {
 		return nil, err
 	}
 
@@ -751,7 +754,7 @@ func handleGetdel(params internal.HandlerFuncParams) ([]byte, error) {
 
 	value := params.GetValues(params.Context, []string{key})[key]
 	delkey := keys.WriteKeys[0]
-	err = params.DeleteKey(params.Context, delkey)
+	err = params.DeleteKeys(params.Context, []string{delkey})
 	if err != nil {
 		return nil, err
 	}
@@ -990,7 +993,7 @@ func handleMove(params internal.HandlerFuncParams) ([]byte, error) {
 		}
 
 		// remove key from source db
-		err = params.DeleteKey(params.Context, key)
+		err = params.DeleteKeys(params.Context, []string{key})
 		if err != nil {
 			return nil, err
 		}

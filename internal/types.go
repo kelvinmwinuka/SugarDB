@@ -79,7 +79,7 @@ type ApplyRequest struct {
 	Protocol     int      `json:"Protocol"`
 	Database     int      `json:"Database"`
 	CMD          []string `json:"CMD"`
-	Key          string   `json:"Key"` // Optional: Used with delete-key type to specify which key to delete.
+	Keys         []string `json:"Keys"` // Optional: Used with delete-key type to specify list of keys to delete.
 }
 
 type ApplyResponse struct {
@@ -143,7 +143,7 @@ type HandlerFuncParams struct {
 	// GetHashExpiry returns the expiry time of a field in a key whose value is a hash.
 	GetHashExpiry func(ctx context.Context, key string, field string) time.Time
 	// DeleteKey deletes the specified key. Returns an error if the deletion was unsuccessful.
-	DeleteKey func(ctx context.Context, key string) error
+	DeleteKeys func(ctx context.Context, keys []string) error
 	// GetValues retrieves the values from the specified keys.
 	// Non-existent keys will be nil.
 	GetValues func(ctx context.Context, keys []string) map[string]interface{}
