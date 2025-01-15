@@ -71,7 +71,7 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 		DeleteKeys: func(ctx context.Context, keys []string) error {
 			server.storeLock.Lock()
 			defer server.storeLock.Unlock()
-			return server.deleteKey(ctx, keys)
+			return server.deleteKeys(ctx, keys)
 		},
 		GetConnectionInfo: func(conn *net.Conn) internal.ConnectionInfo {
 			server.connInfo.mut.RLock()

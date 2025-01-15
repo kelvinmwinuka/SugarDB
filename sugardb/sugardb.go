@@ -190,8 +190,14 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	}
 
 	// Setup event queue
+	eventDeleteKeyFunc := sugarDB.deleteKeys
+	if sugarDB.isInCluster() {
+		eventDeleteKeyFunc = sugarDB.raftApplyDeleteKey
+	}
 	eventQueue := events.NewEventQueue(
+		events.WithDeleteKeysFunc(eventDeleteKeyFunc),
 		events.WithCommandHandlerFunc(sugarDB.handleCommand),
+		events.WithUpdateKeysInCacheFunc(sugarDB.updateKeysInCache),
 	)
 	sugarDB.eventQueue = eventQueue
 
@@ -228,7 +234,7 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			DeleteKeys: func(ctx context.Context, keys []string) error {
 				sugarDB.storeLock.Lock()
 				defer sugarDB.storeLock.Unlock()
-				return sugarDB.deleteKey(ctx, keys)
+				return sugarDB.deleteKeys(ctx, keys)
 			},
 			GetState: func() map[int]map[string]internal.KeyData {
 				state := make(map[int]map[string]internal.KeyData)
@@ -530,7 +536,7 @@ func (server *SugarDB) handleConnection(conn net.Conn) {
 		server.eventQueue.Enqueue(events.Event{
 			Kind:     events.EVENT_KIND_COMMAND,
 			Priority: events.EVENT_PRIORITY_MEDIUM,
-			Time:     time.Now(),
+			Time:     server.clock.Now(),
 			Args: events.CommandEventArgs{
 				Ctx:      ctx,
 				Message:  message,

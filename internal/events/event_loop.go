@@ -48,18 +48,17 @@ type EventQueue struct {
 	eventHeap          eventHeap
 	mux                sync.Mutex
 	commandHandlerFunc func(
-		ctx context.Context,
-		message []byte,
-		conn *net.Conn,
-		replay bool,
-		embedded bool,
+		ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool,
 	) ([]byte, error)
+	deleteKeysFunc        func(ctx context.Context, keys []string) error
+	updateKeysInCacheFunc func(ctx context.Context, keys []string) (int64, error)
 }
 
 func (queue *EventQueue) Enqueue(e Event) {
 	queue.mux.Lock()
 	defer queue.mux.Unlock()
 	heap.Push(&queue.eventHeap, e)
+	// TODO: Uncomment this
 	// log.Printf("event queued: %#+v\n", e)
 }
 
@@ -77,14 +76,24 @@ func (queue *EventQueue) len() int {
 }
 
 func WithCommandHandlerFunc(commandHandlerFunc func(
-	ctx context.Context,
-	message []byte,
-	conn *net.Conn,
-	replay bool,
-	embedded bool,
+	ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool,
 ) ([]byte, error)) func(queue *EventQueue) {
 	return func(queue *EventQueue) {
 		queue.commandHandlerFunc = commandHandlerFunc
+	}
+}
+
+func WithDeleteKeysFunc(deleteKeysFunc func(ctx context.Context, keys []string) error) func(queue *EventQueue) {
+	return func(queue *EventQueue) {
+		queue.deleteKeysFunc = deleteKeysFunc
+	}
+}
+
+func WithUpdateKeysInCacheFunc(
+	updateKeysInCacheFunc func(ctx context.Context, keys []string) (int64, error),
+) func(queue *EventQueue) {
+	return func(queue *EventQueue) {
+		queue.updateKeysInCacheFunc = updateKeysInCacheFunc
 	}
 }
 
@@ -106,7 +115,7 @@ func NewEventQueue(options ...func(queue *EventQueue)) *EventQueue {
 				continue
 			}
 			e := queue.dequeue()
-			// log.Printf("processing event: %#+v\n", e)
+			log.Printf("processing event: %#+v\n", e)
 			switch e.Kind {
 
 			default:
@@ -157,6 +166,18 @@ func NewEventQueue(options ...func(queue *EventQueue)) *EventQueue {
 
 			case EVENT_KIND_DELETE_KEY:
 				// Handle delete key event
+				args := e.Args.(DeleteKeysEventArgs)
+				if err := queue.deleteKeysFunc(args.Ctx, args.Keys); err != nil {
+					log.Printf("error %+v on event: %+v", err, e)
+				}
+
+			case EVENT_KIND_UPDATE_KEYS_IN_CACHE:
+				// Handle events to update key status in caches (lfu, lru)
+				args := e.Args.(UpdateKeysInCacheEventArgs)
+				_, err := queue.updateKeysInCacheFunc(args.Ctx, args.Keys)
+				if err != nil {
+					log.Printf("error %+v on event: %+v", err, e)
+				}
 			}
 		}
 	}()

@@ -16,8 +16,9 @@ var (
 type EventKind string
 
 var (
-	EVENT_KIND_COMMAND    = EventKind("command")
-	EVENT_KIND_DELETE_KEY = EventKind("delete-key")
+	EVENT_KIND_COMMAND              = EventKind("command")
+	EVENT_KIND_DELETE_KEY           = EventKind("delete-key")
+	EVENT_KIND_UPDATE_KEYS_IN_CACHE = EventKind("update-keys-in-cache")
 )
 
 type Event struct {
@@ -33,4 +34,14 @@ type CommandEventArgs struct {
 	Conn     *net.Conn
 	Replay   bool
 	Embedded bool
+}
+
+type DeleteKeysEventArgs struct {
+	Ctx  context.Context
+	Keys []string
+}
+
+type UpdateKeysInCacheEventArgs struct {
+	Ctx  context.Context
+	Keys []string
 }
