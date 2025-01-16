@@ -78,9 +78,6 @@ func (server *SugarDB) SwapDBs(database1, database2 int) {
 // Flush flushes all the data from the database at the specified index.
 // When -1 is passed, all the logical databases are cleared.
 func (server *SugarDB) Flush(database int) {
-	server.storeLock.Lock()
-	defer server.storeLock.Unlock()
-
 	server.keysWithExpiry.rwMutex.Lock()
 	defer server.keysWithExpiry.rwMutex.Unlock()
 
@@ -117,9 +114,6 @@ func (server *SugarDB) Flush(database int) {
 }
 
 func (server *SugarDB) keysExist(ctx context.Context, keys []string) map[string]bool {
-	server.storeLock.RLock()
-	defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	exists := make(map[string]bool, len(keys))
@@ -140,9 +134,6 @@ func (server *SugarDB) keysExist(ctx context.Context, keys []string) map[string]
 }
 
 func (server *SugarDB) getExpiry(ctx context.Context, key string) time.Time {
-	server.storeLock.RLock()
-	defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	entry, ok := server.store[database][key]
@@ -154,9 +145,6 @@ func (server *SugarDB) getExpiry(ctx context.Context, key string) time.Time {
 }
 
 func (server *SugarDB) getHashExpiry(ctx context.Context, key string, field string) time.Time {
-	server.storeLock.RLock()
-	defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	entry, ok := server.store[database][key]
@@ -170,9 +158,6 @@ func (server *SugarDB) getHashExpiry(ctx context.Context, key string, field stri
 }
 
 func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]interface{} {
-	server.storeLock.Lock()
-	defer server.storeLock.Unlock()
-
 	database := ctx.Value("Database").(int)
 
 	values := make(map[string]interface{}, len(keys))
@@ -203,9 +188,11 @@ func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]
 				Kind:     events.EVENT_KIND_DELETE_KEY,
 				Priority: events.EVENT_PRIORITY_HIGH,
 				Time:     server.clock.Now(),
-				Args: events.DeleteKeysEventArgs{
-					Ctx:  ctx,
-					Keys: expiredKeys,
+				Handler: func() error {
+					if !server.isInCluster() {
+						return server.deleteKeys(ctx, expiredKeys)
+					}
+					return server.raftApplyDeleteKeys(ctx, expiredKeys)
 				},
 			})
 		} else if server.isInCluster() && !server.raft.IsRaftLeader() {
@@ -220,9 +207,9 @@ func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]
 		Kind:     events.EVENT_KIND_UPDATE_KEYS_IN_CACHE,
 		Priority: events.EVENT_PRIORITY_HIGH,
 		Time:     server.clock.Now(),
-		Args: events.UpdateKeysInCacheEventArgs{
-			Ctx:  ctx,
-			Keys: keys,
+		Handler: func() error {
+			_, err := server.updateKeysInCache(ctx, keys)
+			return err
 		},
 	})
 
@@ -230,11 +217,8 @@ func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]
 }
 
 func (server *SugarDB) setValues(ctx context.Context, entries map[string]interface{}) error {
-	server.storeLock.Lock()
-	defer server.storeLock.Unlock()
-
 	if internal.IsMaxMemoryExceeded(server.memUsed, server.config.MaxMemory) &&
-			server.config.EvictionPolicy == constants.NoEviction {
+		server.config.EvictionPolicy == constants.NoEviction {
 		return errors.New("max memory reached, key value not set")
 	}
 
@@ -274,9 +258,9 @@ func (server *SugarDB) setValues(ctx context.Context, entries map[string]interfa
 		Kind:     events.EVENT_KIND_UPDATE_KEYS_IN_CACHE,
 		Priority: events.EVENT_PRIORITY_HIGH,
 		Time:     server.clock.Now(),
-		Args: events.UpdateKeysInCacheEventArgs{
-			Ctx:  ctx,
-			Keys: keys,
+		Handler: func() error {
+			_, err := server.updateKeysInCache(ctx, keys)
+			return err
 		},
 	})
 
@@ -284,9 +268,6 @@ func (server *SugarDB) setValues(ctx context.Context, entries map[string]interfa
 }
 
 func (server *SugarDB) setExpiry(ctx context.Context, key string, expireAt time.Time, touch bool) {
-	server.storeLock.Lock()
-	defer server.storeLock.Unlock()
-
 	database := ctx.Value("Database").(int)
 
 	server.store[database][key] = internal.KeyData{
@@ -307,18 +288,15 @@ func (server *SugarDB) setExpiry(ctx context.Context, key string, expireAt time.
 			Kind:     events.EVENT_KIND_UPDATE_KEYS_IN_CACHE,
 			Priority: events.EVENT_PRIORITY_HIGH,
 			Time:     server.clock.Now(),
-			Args: events.UpdateKeysInCacheEventArgs{
-				Ctx:  ctx,
-				Keys: []string{key},
+			Handler: func() error {
+				_, err := server.updateKeysInCache(ctx, []string{key})
+				return err
 			},
 		})
 	}
 }
 
 func (server *SugarDB) setHashExpiry(ctx context.Context, key string, field string, expireAt time.Time) error {
-	server.storeLock.Lock()
-	defer server.storeLock.Unlock()
-
 	database := ctx.Value("Database").(int)
 
 	hashmap, ok := server.store[database][key].Value.(hash.Hash)
@@ -397,25 +375,6 @@ func (server *SugarDB) createDatabase(database int) {
 	server.lruCache.cache[database] = eviction.NewCacheLRU()
 }
 
-func (server *SugarDB) getState() map[int]map[string]interface{} {
-	// Wait unit there's no state mutation or copy in progress before starting a new copy process.
-	for {
-		if !server.stateCopyInProgress.Load() && !server.stateMutationInProgress.Load() {
-			server.stateCopyInProgress.Store(true)
-			break
-		}
-	}
-	data := make(map[int]map[string]interface{})
-	for db, store := range server.store {
-		data[db] = make(map[string]interface{})
-		for k, v := range store {
-			data[db][k] = v
-		}
-	}
-	server.stateCopyInProgress.Store(false)
-	return data
-}
-
 // updateKeysInCache updates either the key access count or the most recent access time in the cache
 // depending on whether an LFU or LRU strategy was used.
 func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (int64, error) {
@@ -430,9 +389,6 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 	if server.config.MaxMemory == 0 {
 		return touchCounter, nil
 	}
-
-	server.storeLock.Lock()
-	defer server.storeLock.Unlock()
 
 	for _, key := range keys {
 		// Verify key exists
@@ -545,7 +501,7 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // 				}
 // 			} else if server.isInCluster() && server.raft.IsRaftLeader() {
 // 				// If in raft cluster, send command to delete key from cluster
-// 				if err := server.raftApplyDeleteKey(ctx, key); err != nil {
+// 				if err := server.raftApplyDeleteKeys(ctx, key); err != nil {
 //
 // 					return fmt.Errorf("adjustMemoryUsage -> LFU cache eviction: %+v", err)
 // 				}
@@ -578,7 +534,7 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // 			} else if server.isInCluster() && server.raft.IsRaftLeader() {
 // 				// If in cluster mode and the node is a cluster leader,
 // 				// send command to delete the key from the cluster.
-// 				if err := server.raftApplyDeleteKey(ctx, key); err != nil {
+// 				if err := server.raftApplyDeleteKeys(ctx, key); err != nil {
 // 					return fmt.Errorf("adjustMemoryUsage -> LRU cache eviction: %+v", err)
 // 				}
 // 			}
@@ -613,7 +569,7 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // 									return fmt.Errorf("adjustMemoryUsage -> all keys random: %+v", err)
 // 								}
 // 							} else if server.isInCluster() && server.raft.IsRaftLeader() {
-// 								if err := server.raftApplyDeleteKey(ctx, key); err != nil {
+// 								if err := server.raftApplyDeleteKeys(ctx, key); err != nil {
 //
 // 									return fmt.Errorf("adjustMemoryUsage -> all keys random: %+v", err)
 // 								}
@@ -648,7 +604,7 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // 					return fmt.Errorf("adjustMemoryUsage -> volatile keys random: %+v", err)
 // 				}
 // 			} else if server.isInCluster() && server.raft.IsRaftLeader() {
-// 				if err := server.raftApplyDeleteKey(ctx, key); err != nil {
+// 				if err := server.raftApplyDeleteKeys(ctx, key); err != nil {
 //
 // 					return fmt.Errorf("adjustMemoryUsage -> volatile keys randome: %+v", err)
 // 				}
@@ -744,7 +700,7 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // 				return fmt.Errorf("evictKeysWithExpiredTTL -> standalone delete: %+v", err)
 // 			}
 // 		} else if server.isInCluster() && server.raft.IsRaftLeader() {
-// 			if err := server.raftApplyDeleteKey(ctx, k); err != nil {
+// 			if err := server.raftApplyDeleteKeys(ctx, k); err != nil {
 // 				return fmt.Errorf("evictKeysWithExpiredTTL -> cluster delete: %+v", err)
 // 			}
 // 		}

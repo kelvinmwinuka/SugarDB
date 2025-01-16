@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -33,13 +34,12 @@ import (
 
 type Opts struct {
 	Config                config.Config
+	Store                 *map[int]map[string]internal.KeyData
+	StoreLock             *sync.RWMutex
 	SetValues             func(ctx context.Context, entries map[string]interface{}) error
 	SetExpiry             func(ctx context.Context, key string, expire time.Time, touch bool)
-	GetState              func() map[int]map[string]internal.KeyData
 	GetCommand            func(command string) (internal.Command, error)
 	DeleteKeys            func(ctx context.Context, keys []string) error
-	StartSnapshot         func()
-	FinishSnapshot        func()
 	SetLatestSnapshotTime func(msec int64)
 	GetHandlerFuncParams  func(ctx context.Context, cmd []string, conn *net.Conn) internal.HandlerFuncParams
 }
@@ -114,13 +114,12 @@ func (r *Raft) RaftInit(ctx context.Context) {
 		raftConfig,
 		NewFSM(FSMOpts{
 			Config:                r.options.Config,
-			GetState:              r.options.GetState,
+			Store:                 r.options.Store,
+			StoreLock:             r.options.StoreLock,
 			GetCommand:            r.options.GetCommand,
 			SetValues:             r.options.SetValues,
 			SetExpiry:             r.options.SetExpiry,
 			DeleteKeys:            r.options.DeleteKeys,
-			StartSnapshot:         r.options.StartSnapshot,
-			FinishSnapshot:        r.options.FinishSnapshot,
 			SetLatestSnapshotTime: r.options.SetLatestSnapshotTime,
 			GetHandlerFuncParams:  r.options.GetHandlerFuncParams,
 		}),

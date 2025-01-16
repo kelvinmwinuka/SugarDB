@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/clock"
+	"github.com/echovault/sugardb/internal/events"
 	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -38,18 +40,30 @@ type Manifest struct {
 	LatestSnapshotHash         [16]byte
 }
 
+type Store struct {
+	store map[int]map[string]internal.KeyData
+	lock  *sync.RWMutex
+}
+
 type Engine struct {
+	store                     map[int]map[string]internal.KeyData
+	storeLock                 *sync.RWMutex
 	clock                     clock.Clock
 	changeCount               atomic.Uint64
 	directory                 string
 	snapshotInterval          time.Duration
 	snapshotThreshold         uint64
-	startSnapshotFunc         func()
-	finishSnapshotFunc        func()
-	getStateFunc              func() map[int]map[string]internal.KeyData
 	setLatestSnapshotTimeFunc func(msec int64)
 	getLatestSnapshotTimeFunc func() int64
 	setKeyDataFunc            func(database int, key string, data internal.KeyData)
+	emitSnapshotEventFunc     func(e events.Event)
+}
+
+func WithStore(store map[int]map[string]internal.KeyData, storeLock *sync.RWMutex) func(engine *Engine) {
+	return func(engine *Engine) {
+		engine.store = store
+		engine.storeLock = storeLock
+	}
 }
 
 func WithClock(clock clock.Clock) func(engine *Engine) {
@@ -76,24 +90,6 @@ func WithThreshold(threshold uint64) func(engine *Engine) {
 	}
 }
 
-func WithStartSnapshotFunc(f func()) func(engine *Engine) {
-	return func(engine *Engine) {
-		engine.startSnapshotFunc = f
-	}
-}
-
-func WithFinishSnapshotFunc(f func()) func(engine *Engine) {
-	return func(engine *Engine) {
-		engine.finishSnapshotFunc = f
-	}
-}
-
-func WithGetStateFunc(f func() map[int]map[string]internal.KeyData) func(engine *Engine) {
-	return func(engine *Engine) {
-		engine.getStateFunc = f
-	}
-}
-
 func WithSetLatestSnapshotTimeFunc(f func(mset int64)) func(engine *Engine) {
 	return func(engine *Engine) {
 		engine.setLatestSnapshotTimeFunc = f
@@ -112,23 +108,26 @@ func WithSetKeyDataFunc(f func(database int, key string, data internal.KeyData))
 	}
 }
 
+func WithEmitEventFunc(f func(e events.Event)) func(engine *Engine) {
+	return func(engine *Engine) {
+		engine.emitSnapshotEventFunc = f
+	}
+}
+
 func NewSnapshotEngine(options ...func(engine *Engine)) *Engine {
 	engine := &Engine{
-		clock:              clock.NewClock(),
-		changeCount:        atomic.Uint64{},
-		directory:          "",
-		snapshotInterval:   5 * time.Minute,
-		snapshotThreshold:  1000,
-		startSnapshotFunc:  func() {},
-		finishSnapshotFunc: func() {},
-		getStateFunc: func() map[int]map[string]internal.KeyData {
-			return make(map[int]map[string]internal.KeyData)
-		},
+		store:                     make(map[int]map[string]internal.KeyData),
+		clock:                     clock.NewClock(),
+		changeCount:               atomic.Uint64{},
+		directory:                 "",
+		snapshotInterval:          5 * time.Minute,
+		snapshotThreshold:         1000,
 		setKeyDataFunc:            func(database int, key string, data internal.KeyData) {},
 		setLatestSnapshotTimeFunc: func(msec int64) {},
 		getLatestSnapshotTimeFunc: func() int64 {
 			return 0
 		},
+		emitSnapshotEventFunc: func(e events.Event) {},
 	}
 
 	for _, option := range options {
@@ -144,9 +143,17 @@ func NewSnapshotEngine(options ...func(engine *Engine)) *Engine {
 			for {
 				<-ticker.C
 				if engine.changeCount.Load() == engine.snapshotThreshold {
-					if err := engine.TakeSnapshot(); err != nil {
-						log.Println(err)
-					}
+					// Emit event to take snapshot
+					engine.emitSnapshotEventFunc(events.Event{
+						Kind:     events.EVENT_KIND_SNAPSHOT,
+						Priority: events.EVENT_PRIORITY_HIGH,
+						Time:     engine.clock.Now(),
+						Handler: func() error {
+							engine.storeLock.RLock()
+							defer engine.storeLock.RUnlock()
+							return engine.TakeSnapshot()
+						},
+					})
 				}
 			}
 		}()
@@ -156,9 +163,6 @@ func NewSnapshotEngine(options ...func(engine *Engine)) *Engine {
 }
 
 func (engine *Engine) TakeSnapshot() error {
-	engine.startSnapshotFunc()
-	defer engine.finishSnapshotFunc()
-
 	// Extract current time
 	msec := engine.clock.Now().UnixMilli()
 
@@ -218,7 +222,7 @@ func (engine *Engine) TakeSnapshot() error {
 
 	// Get current state
 	snapshotObject := internal.SnapshotObject{
-		State:                      internal.FilterExpiredKeys(engine.clock.Now(), engine.getStateFunc()),
+		State:                      internal.FilterExpiredKeys(engine.clock.Now(), engine.store),
 		LatestSnapshotMilliseconds: engine.getLatestSnapshotTimeFunc(),
 	}
 	out, err := json.Marshal(snapshotObject)

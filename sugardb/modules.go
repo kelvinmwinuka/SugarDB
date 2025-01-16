@@ -160,16 +160,6 @@ func (server *SugarDB) handleCommand(ctx context.Context, message []byte, conn *
 		}
 	}
 
-	// If the command is a write command, wait for state copy to finish.
-	if internal.IsWriteCommand(command, subCommand) {
-		for {
-			if !server.stateCopyInProgress.Load() {
-				server.stateMutationInProgress.Store(true)
-				break
-			}
-		}
-	}
-
 	if !server.isInCluster() || !synchronize {
 		res, err := handler(server.getHandlerFuncParams(ctx, cmd, conn))
 		if err != nil {
@@ -181,8 +171,6 @@ func (server *SugarDB) handleCommand(ctx context.Context, message []byte, conn *
 			server.aofEngine.LogCommand(server.connInfo.tcpClients[conn].Database, message)
 			server.connInfo.mut.RUnlock()
 		}
-
-		server.stateMutationInProgress.Store(false)
 
 		return res, err
 	}

@@ -3,8 +3,6 @@ package events
 import (
 	"container/heap"
 	"context"
-	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -50,8 +48,6 @@ type EventQueue struct {
 	commandHandlerFunc func(
 		ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool,
 	) ([]byte, error)
-	deleteKeysFunc        func(ctx context.Context, keys []string) error
-	updateKeysInCacheFunc func(ctx context.Context, keys []string) (int64, error)
 }
 
 func (queue *EventQueue) Enqueue(e Event) {
@@ -83,20 +79,6 @@ func WithCommandHandlerFunc(commandHandlerFunc func(
 	}
 }
 
-func WithDeleteKeysFunc(deleteKeysFunc func(ctx context.Context, keys []string) error) func(queue *EventQueue) {
-	return func(queue *EventQueue) {
-		queue.deleteKeysFunc = deleteKeysFunc
-	}
-}
-
-func WithUpdateKeysInCacheFunc(
-	updateKeysInCacheFunc func(ctx context.Context, keys []string) (int64, error),
-) func(queue *EventQueue) {
-	return func(queue *EventQueue) {
-		queue.updateKeysInCacheFunc = updateKeysInCacheFunc
-	}
-}
-
 func NewEventQueue(options ...func(queue *EventQueue)) *EventQueue {
 	queue := &EventQueue{
 		eventHeap: make(eventHeap, 0),
@@ -123,60 +105,32 @@ func NewEventQueue(options ...func(queue *EventQueue)) *EventQueue {
 
 			case EVENT_KIND_COMMAND:
 				// Handle command event
-				args := e.Args.(CommandEventArgs)
-				w := io.Writer(*args.Conn)
-				res, err := queue.commandHandlerFunc(args.Ctx, args.Message, args.Conn, args.Replay, args.Embedded)
-				if err != nil {
-					log.Println(err)
-					if _, err = w.Write([]byte(fmt.Sprintf("-Error %s\r\n", err.Error()))); err != nil {
-						log.Println(err)
-					}
-					continue
-				}
-
-				chunkSize := 1024
-
-				// If the length of the response is 0, return nothing to the client.
-				if len(res) == 0 {
-					continue
-				}
-
-				if len(res) <= chunkSize {
-					_, _ = w.Write(res)
-					continue
-				}
-
-				// If the response is large, send it in chunks.
-				startIndex := 0
-				for {
-					// If the current start index is less than chunkSize from length, return the remaining bytes.
-					if len(res)-1-startIndex < chunkSize {
-						_, err = w.Write(res[startIndex:])
-						if err != nil {
-							log.Println(err)
-						}
-						break
-					}
-					n, _ := w.Write(res[startIndex : startIndex+chunkSize])
-					if n < chunkSize {
-						break
-					}
-					startIndex += chunkSize
+				if err := e.Handler(); err != nil {
+					log.Printf("error %+v on command event: %+v", err, e)
 				}
 
 			case EVENT_KIND_DELETE_KEY:
 				// Handle delete key event
-				args := e.Args.(DeleteKeysEventArgs)
-				if err := queue.deleteKeysFunc(args.Ctx, args.Keys); err != nil {
-					log.Printf("error %+v on event: %+v", err, e)
+				if err := e.Handler(); err != nil {
+					log.Printf("error %+v on delete keys event: %+v", err, e)
 				}
 
 			case EVENT_KIND_UPDATE_KEYS_IN_CACHE:
 				// Handle events to update key status in caches (lfu, lru)
-				args := e.Args.(UpdateKeysInCacheEventArgs)
-				_, err := queue.updateKeysInCacheFunc(args.Ctx, args.Keys)
-				if err != nil {
-					log.Printf("error %+v on event: %+v", err, e)
+				if err := e.Handler(); err != nil {
+					log.Printf("error %+v on update keys in cache event: %+v", err, e)
+				}
+
+			case EVENT_KIND_SNAPSHOT:
+				// Handle snapshot event
+				if err := e.Handler(); err != nil {
+					log.Printf("error %+v on snapshot event: %+v", err, e)
+				}
+
+			case EVENT_KIND_UPDATE_CONFIG:
+				// Handle config update event
+				if err := e.Handler(); err != nil {
+					log.Printf("error %+v on update config event: %+v", err, e)
 				}
 			}
 		}

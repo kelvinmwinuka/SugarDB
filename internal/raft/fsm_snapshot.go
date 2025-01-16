@@ -21,14 +21,14 @@ import (
 	"github.com/hashicorp/raft"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type SnapshotOpts struct {
 	config                config.Config
-	data                  map[int]map[string]internal.KeyData
-	startSnapshot         func()
-	finishSnapshot        func()
+	store                 *map[int]map[string]internal.KeyData
+	storeLock             *sync.RWMutex
 	setLatestSnapshotTime func(msec int64)
 }
 
@@ -44,16 +44,15 @@ func NewFSMSnapshot(opts SnapshotOpts) *Snapshot {
 
 // Persist implements FSMSnapshot interface
 func (s *Snapshot) Persist(sink raft.SnapshotSink) error {
-	s.options.startSnapshot()
-
 	msec, err := strconv.Atoi(strings.Split(sink.ID(), "-")[2])
 	if err != nil {
 		_ = sink.Cancel()
 		return err
 	}
 
+	s.options.storeLock.RLock()
 	snapshotObject := internal.SnapshotObject{
-		State:                      internal.FilterExpiredKeys(time.Now(), s.options.data),
+		State:                      internal.FilterExpiredKeys(time.Now(), *s.options.store),
 		LatestSnapshotMilliseconds: int64(msec),
 	}
 
@@ -76,5 +75,5 @@ func (s *Snapshot) Persist(sink raft.SnapshotSink) error {
 
 // Release implements FSMSnapshot interface
 func (s *Snapshot) Release() {
-	s.options.finishSnapshot()
+	defer s.options.storeLock.RUnlock()
 }

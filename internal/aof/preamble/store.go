@@ -33,12 +33,18 @@ type ReadWriter interface {
 }
 
 type Store struct {
+	store          map[int]map[string]internal.KeyData
 	clock          clock.Clock
 	rw             ReadWriter
 	mut            sync.Mutex
 	directory      string
-	getStateFunc   func() map[int]map[string]internal.KeyData
 	setKeyDataFunc func(database int, key string, data internal.KeyData)
+}
+
+func WithStore(state map[int]map[string]internal.KeyData) func(store *Store) {
+	return func(store *Store) {
+		store.store = state
+	}
 }
 
 func WithClock(clock clock.Clock) func(store *Store) {
@@ -50,12 +56,6 @@ func WithClock(clock clock.Clock) func(store *Store) {
 func WithReadWriter(rw ReadWriter) func(store *Store) {
 	return func(store *Store) {
 		store.rw = rw
-	}
-}
-
-func WithGetStateFunc(f func() map[int]map[string]internal.KeyData) func(store *Store) {
-	return func(store *Store) {
-		store.getStateFunc = f
 	}
 }
 
@@ -73,14 +73,10 @@ func WithDirectory(directory string) func(store *Store) {
 
 func NewPreambleStore(options ...func(store *Store)) (*Store, error) {
 	store := &Store{
-		clock:     clock.NewClock(),
-		rw:        nil,
-		mut:       sync.Mutex{},
-		directory: "",
-		getStateFunc: func() map[int]map[string]internal.KeyData {
-			// No-Op by default
-			return nil
-		},
+		clock:          clock.NewClock(),
+		rw:             nil,
+		mut:            sync.Mutex{},
+		directory:      "",
 		setKeyDataFunc: func(database int, key string, data internal.KeyData) {},
 	}
 
@@ -109,7 +105,7 @@ func (store *Store) CreatePreamble() error {
 	store.mut.Unlock()
 
 	// Get current state.
-	state := internal.FilterExpiredKeys(store.clock.Now(), store.getStateFunc())
+	state := internal.FilterExpiredKeys(store.clock.Now(), store.store)
 	o, err := json.Marshal(state)
 	if err != nil {
 		return err

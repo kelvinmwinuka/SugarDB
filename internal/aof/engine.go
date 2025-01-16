@@ -27,6 +27,7 @@ import (
 )
 
 type Engine struct {
+	store        map[int]map[string]internal.KeyData
 	clock        clock.Clock
 	syncStrategy string
 	directory    string
@@ -40,9 +41,14 @@ type Engine struct {
 
 	startRewriteFunc  func()
 	finishRewriteFunc func()
-	getStateFunc      func() map[int]map[string]internal.KeyData
 	setKeyDataFunc    func(database int, key string, data internal.KeyData)
 	handleCommand     func(database int, command []byte)
+}
+
+func WithStore(store map[int]map[string]internal.KeyData) func(engine *Engine) {
+	return func(engine *Engine) {
+		engine.store = store
+	}
 }
 
 func WithClock(clock clock.Clock) func(engine *Engine) {
@@ -72,12 +78,6 @@ func WithStartRewriteFunc(f func()) func(engine *Engine) {
 func WithFinishRewriteFunc(f func()) func(engine *Engine) {
 	return func(engine *Engine) {
 		engine.finishRewriteFunc = f
-	}
-}
-
-func WithGetStateFunc(f func() map[int]map[string]internal.KeyData) func(engine *Engine) {
-	return func(engine *Engine) {
-		engine.getStateFunc = f
 	}
 }
 
@@ -114,7 +114,6 @@ func NewAOFEngine(options ...func(engine *Engine)) (*Engine, error) {
 		logCount:          0,
 		startRewriteFunc:  func() {},
 		finishRewriteFunc: func() {},
-		getStateFunc:      func() map[int]map[string]internal.KeyData { return nil },
 		setKeyDataFunc:    func(database int, key string, data internal.KeyData) {},
 		handleCommand:     func(database int, command []byte) {},
 	}
@@ -130,7 +129,7 @@ func NewAOFEngine(options ...func(engine *Engine)) (*Engine, error) {
 		preamble.WithClock(engine.clock),
 		preamble.WithDirectory(engine.directory),
 		preamble.WithReadWriter(engine.preambleRW),
-		preamble.WithGetStateFunc(engine.getStateFunc),
+		preamble.WithStore(engine.store),
 		preamble.WithSetKeyDataFunc(engine.setKeyDataFunc),
 	)
 	if err != nil {

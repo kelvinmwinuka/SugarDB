@@ -26,7 +26,7 @@ func (server *SugarDB) isInCluster() bool {
 	return server.config.BootstrapCluster || server.config.JoinAddr != ""
 }
 
-func (server *SugarDB) raftApplyDeleteKey(ctx context.Context, keys []string) error {
+func (server *SugarDB) raftApplyDeleteKeys(ctx context.Context, keys []string) error {
 	serverId, _ := ctx.Value(internal.ContextServerID("ServerID")).(string)
 	protocol, _ := ctx.Value("Protocol").(int)
 	database, _ := ctx.Value("Database").(int)

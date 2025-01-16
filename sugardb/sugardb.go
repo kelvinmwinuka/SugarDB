@@ -122,10 +122,7 @@ type SugarDB struct {
 	acl    *acl.ACL
 	pubSub *pubsub.PubSub
 
-	snapshotInProgress         atomic.Bool      // Atomic boolean that's true when actively taking a snapshot.
 	rewriteAOFInProgress       atomic.Bool      // Atomic boolean that's true when actively rewriting AOF file is in progress.
-	stateCopyInProgress        atomic.Bool      // Atomic boolean that's true when actively copying state for snapshotting or preamble generation.
-	stateMutationInProgress    atomic.Bool      // Atomic boolean that is set to true when state mutation is in progress.
 	latestSnapshotMilliseconds atomic.Int64     // Unix epoch in milliseconds.
 	snapshotEngine             *snapshot.Engine // Snapshot engine for standalone mode.
 	aofEngine                  *aof.Engine      // AOF engine for standalone mode.
@@ -190,14 +187,8 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	}
 
 	// Setup event queue
-	eventDeleteKeyFunc := sugarDB.deleteKeys
-	if sugarDB.isInCluster() {
-		eventDeleteKeyFunc = sugarDB.raftApplyDeleteKey
-	}
 	eventQueue := events.NewEventQueue(
-		events.WithDeleteKeysFunc(eventDeleteKeyFunc),
 		events.WithCommandHandlerFunc(sugarDB.handleCommand),
-		events.WithUpdateKeysInCacheFunc(sugarDB.updateKeysInCache),
 	)
 	sugarDB.eventQueue = eventQueue
 
@@ -223,29 +214,18 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 
 	if sugarDB.isInCluster() {
 		sugarDB.raft = raft.NewRaft(raft.Opts{
+			Store:                 &sugarDB.store,
+			StoreLock:             sugarDB.storeLock,
 			Config:                sugarDB.config,
 			GetCommand:            sugarDB.getCommand,
 			SetValues:             sugarDB.setValues,
 			SetExpiry:             sugarDB.setExpiry,
-			StartSnapshot:         sugarDB.startSnapshot,
-			FinishSnapshot:        sugarDB.finishSnapshot,
 			SetLatestSnapshotTime: sugarDB.setLatestSnapshot,
 			GetHandlerFuncParams:  sugarDB.getHandlerFuncParams,
 			DeleteKeys: func(ctx context.Context, keys []string) error {
 				sugarDB.storeLock.Lock()
 				defer sugarDB.storeLock.Unlock()
 				return sugarDB.deleteKeys(ctx, keys)
-			},
-			GetState: func() map[int]map[string]internal.KeyData {
-				state := make(map[int]map[string]internal.KeyData)
-				for database, store := range sugarDB.getState() {
-					for k, v := range store {
-						if data, ok := v.(internal.KeyData); ok {
-							state[database][k] = data
-						}
-					}
-				}
-				return state
 			},
 		})
 		sugarDB.memberList = memberlist.NewMemberList(memberlist.Opts{
@@ -255,30 +235,20 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			RemoveRaftServer: sugarDB.raft.RemoveServer,
 			IsRaftLeader:     sugarDB.raft.IsRaftLeader,
 			ApplyMutate:      sugarDB.raftApplyCommand,
-			ApplyDeleteKeys:  sugarDB.raftApplyDeleteKey,
+			ApplyDeleteKeys:  sugarDB.raftApplyDeleteKeys,
 		})
 	} else {
 		// Set up standalone snapshot engine
 		sugarDB.snapshotEngine = snapshot.NewSnapshotEngine(
 			snapshot.WithClock(sugarDB.clock),
 			snapshot.WithDirectory(sugarDB.config.DataDir),
-			snapshot.WithThreshold(sugarDB.config.SnapShotThreshold),
+			snapshot.WithStore(sugarDB.store, sugarDB.storeLock),
 			snapshot.WithInterval(sugarDB.config.SnapshotInterval),
-			snapshot.WithStartSnapshotFunc(sugarDB.startSnapshot),
-			snapshot.WithFinishSnapshotFunc(sugarDB.finishSnapshot),
+			snapshot.WithThreshold(sugarDB.config.SnapShotThreshold),
 			snapshot.WithSetLatestSnapshotTimeFunc(sugarDB.setLatestSnapshot),
 			snapshot.WithGetLatestSnapshotTimeFunc(sugarDB.getLatestSnapshotTime),
-			snapshot.WithGetStateFunc(func() map[int]map[string]internal.KeyData {
-				state := make(map[int]map[string]internal.KeyData)
-				for database, data := range sugarDB.getState() {
-					state[database] = make(map[string]internal.KeyData)
-					for key, value := range data {
-						if keyData, ok := value.(internal.KeyData); ok {
-							state[database][key] = keyData
-						}
-					}
-				}
-				return state
+			snapshot.WithEmitEventFunc(func(e events.Event) {
+				sugarDB.eventQueue.Enqueue(e)
 			}),
 			snapshot.WithSetKeyDataFunc(func(database int, key string, data internal.KeyData) {
 				ctx := context.WithValue(context.Background(), "Database", database)
@@ -291,23 +261,12 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 
 		// Set up standalone AOF engine
 		aofEngine, err := aof.NewAOFEngine(
+			aof.WithStore(sugarDB.store),
 			aof.WithClock(sugarDB.clock),
 			aof.WithDirectory(sugarDB.config.DataDir),
 			aof.WithStrategy(sugarDB.config.AOFSyncStrategy),
 			aof.WithStartRewriteFunc(sugarDB.startRewriteAOF),
 			aof.WithFinishRewriteFunc(sugarDB.finishRewriteAOF),
-			aof.WithGetStateFunc(func() map[int]map[string]internal.KeyData {
-				state := make(map[int]map[string]internal.KeyData)
-				for database, data := range sugarDB.getState() {
-					state[database] = make(map[string]internal.KeyData)
-					for key, value := range data {
-						if keyData, ok := value.(internal.KeyData); ok {
-							state[database][key] = keyData
-						}
-					}
-				}
-				return state
-			}),
 			aof.WithSetKeyDataFunc(func(database int, key string, value internal.KeyData) {
 				ctx := context.WithValue(context.Background(), "Database", database)
 				if err := sugarDB.setValues(ctx, map[string]interface{}{key: value.Value}); err != nil {
@@ -537,12 +496,43 @@ func (server *SugarDB) handleConnection(conn net.Conn) {
 			Kind:     events.EVENT_KIND_COMMAND,
 			Priority: events.EVENT_PRIORITY_MEDIUM,
 			Time:     server.clock.Now(),
-			Args: events.CommandEventArgs{
-				Ctx:      ctx,
-				Message:  message,
-				Conn:     &conn,
-				Replay:   false,
-				Embedded: false,
+			Handler: func() error {
+				w := io.Writer(conn)
+				res, err := server.handleCommand(ctx, message, &conn, false, false)
+				if err != nil {
+					_, _ = w.Write([]byte(fmt.Sprintf("-Error %s\r\n", err.Error())))
+				}
+
+				chunkSize := 1024
+
+				// If the length of the response is 0, return nothing to the client.
+				if len(res) == 0 {
+					return nil
+				}
+
+				if len(res) <= chunkSize {
+					_, _ = w.Write(res)
+					return nil
+				}
+
+				// If the response is large, send it in chunks.
+				startIndex := 0
+				for {
+					// If the current start index is less than chunkSize from length, return the remaining bytes.
+					if len(res)-1-startIndex < chunkSize {
+						_, err = w.Write(res[startIndex:])
+						if err != nil {
+							log.Println(err)
+						}
+						break
+					}
+					n, _ := w.Write(res[startIndex : startIndex+chunkSize])
+					if n < chunkSize {
+						break
+					}
+					startIndex += chunkSize
+				}
+				return nil
 			},
 		})
 	}
@@ -559,10 +549,7 @@ func (server *SugarDB) Start() {
 
 // takeSnapshot triggers a snapshot when called.
 func (server *SugarDB) takeSnapshot() error {
-	if server.snapshotInProgress.Load() {
-		return errors.New("snapshot already in progress")
-	}
-
+	// TODO: Create a snapshot event instead of directly taking a snapshot
 	go func() {
 		if server.isInCluster() {
 			// Handle snapshot in cluster mode
@@ -576,16 +563,7 @@ func (server *SugarDB) takeSnapshot() error {
 			log.Println(err)
 		}
 	}()
-
 	return nil
-}
-
-func (server *SugarDB) startSnapshot() {
-	server.snapshotInProgress.Store(true)
-}
-
-func (server *SugarDB) finishSnapshot() {
-	server.snapshotInProgress.Store(false)
 }
 
 func (server *SugarDB) setLatestSnapshot(msec int64) {

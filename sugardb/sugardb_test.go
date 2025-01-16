@@ -456,7 +456,7 @@ func Test_Cluster(t *testing.T) {
 
 		// Delete the keys using raftApplyDelete method.
 		for _, test := range tests {
-			if err := nodes[0].server.raftApplyDeleteKey(nodes[0].server.context, test.key); err != nil {
+			if err := nodes[0].server.raftApplyDeleteKeys(nodes[0].server.context, test.key); err != nil {
 				t.Error(err)
 			}
 		}

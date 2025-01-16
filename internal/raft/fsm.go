@@ -25,18 +25,18 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
 type FSMOpts struct {
 	Config                config.Config
-	GetState              func() map[int]map[string]internal.KeyData
+	Store                 *map[int]map[string]internal.KeyData
+	StoreLock             *sync.RWMutex
 	GetCommand            func(command string) (internal.Command, error)
 	SetValues             func(ctx context.Context, entries map[string]interface{}) error
 	SetExpiry             func(ctx context.Context, key string, expire time.Time, touch bool)
 	DeleteKeys            func(ctx context.Context, keys []string) error
-	StartSnapshot         func()
-	FinishSnapshot        func()
 	SetLatestSnapshotTime func(msec int64)
 	GetHandlerFuncParams  func(ctx context.Context, cmd []string, conn *net.Conn) internal.HandlerFuncParams
 }
@@ -135,10 +135,9 @@ func (fsm *FSM) Apply(log *raft.Log) interface{} {
 func (fsm *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	return NewFSMSnapshot(SnapshotOpts{
 		config:                fsm.options.Config,
-		startSnapshot:         fsm.options.StartSnapshot,
-		finishSnapshot:        fsm.options.FinishSnapshot,
 		setLatestSnapshotTime: fsm.options.SetLatestSnapshotTime,
-		data:                  fsm.options.GetState(),
+		store:                 fsm.options.Store,
+		storeLock:             fsm.options.StoreLock,
 	}), nil
 }
 
