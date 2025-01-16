@@ -44,13 +44,11 @@ func (server *SugarDB) SwapDBs(database1, database2 int) {
 	}
 
 	// If any of the databases does not exist, create them.
-	server.storeLock.Lock()
 	for _, database := range []int{database1, database2} {
 		if server.store[database] == nil {
 			server.createDatabase(database)
 		}
 	}
-	server.storeLock.Unlock()
 
 	// Swap the connections for each database.
 	server.connInfo.mut.Lock()
@@ -724,9 +722,6 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // }
 
 func (server *SugarDB) randomKey(ctx context.Context) string {
-	server.storeLock.RLock()
-	defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	_max := len(server.store[database])
@@ -734,13 +729,13 @@ func (server *SugarDB) randomKey(ctx context.Context) string {
 		return ""
 	}
 
-	randnum := rand.Intn(_max)
+	randNum := rand.Intn(_max)
 	i := 0
-	var randkey string
+	var randKey string
 
 	for key, _ := range server.store[database] {
-		if i == randnum {
-			randkey = key
+		if i == randNum {
+			randKey = key
 			break
 		} else {
 			i++
@@ -748,13 +743,10 @@ func (server *SugarDB) randomKey(ctx context.Context) string {
 
 	}
 
-	return randkey
+	return randKey
 }
 
 func (server *SugarDB) dbSize(ctx context.Context) int {
-	server.storeLock.RLock()
-	defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 	return len(server.store[database])
 }

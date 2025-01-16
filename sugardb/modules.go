@@ -68,11 +68,7 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 		SwapDBs:               server.SwapDBs,
 		GetServerInfo:         server.GetServerInfo,
 		AddScript:             server.AddScript,
-		DeleteKeys: func(ctx context.Context, keys []string) error {
-			server.storeLock.Lock()
-			defer server.storeLock.Unlock()
-			return server.deleteKeys(ctx, keys)
-		},
+		DeleteKeys:            server.deleteKeys,
 		GetConnectionInfo: func(conn *net.Conn) internal.ConnectionInfo {
 			server.connInfo.mut.RLock()
 			defer server.connInfo.mut.RUnlock()
@@ -93,11 +89,9 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 			}
 
 			// If the database index does not exist, create the new database.
-			server.storeLock.Lock()
 			if server.store[database] == nil {
 				server.createDatabase(database)
 			}
-			server.storeLock.Unlock()
 
 			// Set database index for the current connection.
 			info.Database = database
@@ -108,6 +102,9 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 }
 
 func (server *SugarDB) handleCommand(ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool) ([]byte, error) {
+	server.storeLock.Lock()
+	defer server.storeLock.Unlock()
+
 	// Prepare context before processing the command.
 	server.connInfo.mut.RLock()
 	if embedded && !replay {
