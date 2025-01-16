@@ -547,23 +547,20 @@ func (server *SugarDB) Start() {
 	server.startTCP()
 }
 
-// takeSnapshot triggers a snapshot when called.
-func (server *SugarDB) takeSnapshot() error {
-	// TODO: Create a snapshot event instead of directly taking a snapshot
-	go func() {
-		if server.isInCluster() {
-			// Handle snapshot in cluster mode
-			if err := server.raft.TakeSnapshot(); err != nil {
-				log.Println(err)
+// takeSnapshot emits an event to take a snapshot of the store when called.
+func (server *SugarDB) takeSnapshot() {
+	server.eventQueue.Enqueue(events.Event{
+		Kind:     events.EVENT_KIND_SNAPSHOT,
+		Priority: events.EVENT_PRIORITY_HIGH,
+		Time:     server.clock.Now(),
+		Handler: func() error {
+			if server.isInCluster() {
+				// Handle snapshot in cluster mode
+				return server.raft.TakeSnapshot()
 			}
-			return
-		}
-		// Handle snapshot in standalone mode
-		if err := server.snapshotEngine.TakeSnapshot(); err != nil {
-			log.Println(err)
-		}
-	}()
-	return nil
+			return server.snapshotEngine.TakeSnapshot()
+		},
+	})
 }
 
 func (server *SugarDB) setLatestSnapshot(msec int64) {

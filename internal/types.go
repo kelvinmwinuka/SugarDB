@@ -168,7 +168,7 @@ type HandlerFuncParams struct {
 	// There's no need to use this outside of the pubsub package.
 	GetPubSub func() interface{}
 	// TakeSnapshot triggers a snapshot by the SugarDB instance.
-	TakeSnapshot func() error
+	TakeSnapshot func()
 	// RewriteAOF triggers a compaction of the commands logs by the SugarDB instance.
 	RewriteAOF func() error
 	// GetLatestSnapshotTime returns the latest snapshot timestamp.

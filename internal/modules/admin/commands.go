@@ -273,9 +273,7 @@ Get the list of command names. Allows for filtering by ACL category or glob patt
 				}, nil
 			},
 			HandlerFunc: func(params internal.HandlerFuncParams) ([]byte, error) {
-				if err := params.TakeSnapshot(); err != nil {
-					return nil, err
-				}
+				params.TakeSnapshot()
 				return []byte(constants.OkResponse), nil
 			},
 		},
