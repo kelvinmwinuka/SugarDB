@@ -59,11 +59,11 @@ func Test_PubSub(t *testing.T) {
 		mockServer.ShutDown()
 	})
 
-	t.Run("Test_HandleSubscribe", func(t *testing.T) {
+	t.Run("Test_HandleSubscribe_Channels", func(t *testing.T) {
 		t.Parallel()
 
 		// Establish connections.
-		numOfConnections := 20
+		numOfConnections := 10
 		rawConnections := make([]net.Conn, numOfConnections)
 		connections := make([]*resp.Conn, numOfConnections)
 		for i := 0; i < numOfConnections; i++ {
@@ -123,14 +123,38 @@ func Test_PubSub(t *testing.T) {
 				return
 			}
 		}
+	})
+
+	t.Run("Test_HandleSubscribe_Patterns", func(t *testing.T) {
+		t.Parallel()
+
+		// Establish connections.
+		numOfConnections := 10
+		rawConnections := make([]net.Conn, numOfConnections)
+		connections := make([]*resp.Conn, numOfConnections)
+		for i := 0; i < numOfConnections; i++ {
+			conn, err := internal.GetConnection("localhost", port)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			rawConnections[i] = conn
+			connections[i] = resp.NewConn(conn)
+		}
+		defer func() {
+			for _, conn := range rawConnections {
+				_ = conn.Close()
+			}
+		}()
 
 		// Test subscribe to patterns
-		patterns := []string{"psub_channel*"}
-		command = []resp.Value{resp.StringValue("PSUBSCRIBE")}
+		patterns := []string{"psub_pattern_1*", "pubsub_pattern_2*"}
+		command := []resp.Value{resp.StringValue("PSUBSCRIBE")}
 		for _, pattern := range patterns {
 			command = append(command, resp.StringValue(pattern))
 		}
 		for _, conn := range connections {
+			// fmt.Println("subscribing connection using PSUBSCRIBE: ", conn)
 			if err := conn.WriteArray(command); err != nil {
 				t.Error(err)
 				return
@@ -143,7 +167,7 @@ func Test_PubSub(t *testing.T) {
 				}
 			}
 		}
-		numSubs, err = mockServer.PubSubNumSub(patterns...)
+		numSubs, err := mockServer.PubSubNumSub(patterns...)
 		if err != nil {
 			t.Error(err)
 			return
@@ -956,6 +980,7 @@ func Test_PubSub(t *testing.T) {
 				cmd:              append([]string{"PUBSUB", "NUMSUB"}, channels...),
 				expectedResponse: [][]string{{"channel_1", "3"}, {"channel_2", "3"}, {"channel_3", "3"}},
 			},
+
 			{
 				name: "2. Get all the subscriptions of on existing channels and a few non-existent ones",
 				cmd:  append([]string{"PUBSUB", "NUMSUB", "non_existent_channel_1", "non_existent_channel_2"}, channels...),

@@ -17,32 +17,31 @@ package pubsub
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
 	"net"
 	"slices"
 	"sync"
 
 	"github.com/gobwas/glob"
-	"github.com/tidwall/resp"
 )
 
 type PubSub struct {
+	ctx           context.Context
 	channels      []*Channel
 	channelsRWMut sync.RWMutex
 }
 
-func NewPubSub() *PubSub {
+func NewPubSub(ctx context.Context) *PubSub {
 	return &PubSub{
+		ctx:           ctx,
 		channels:      []*Channel{},
 		channelsRWMut: sync.RWMutex{},
 	}
 }
 
-func (ps *PubSub) Subscribe(_ context.Context, conn *net.Conn, channels []string, withPattern bool) {
+func (ps *PubSub) Subscribe(sub any, channels []string, withPattern bool) {
 	ps.channelsRWMut.Lock()
 	defer ps.channelsRWMut.Unlock()
-
-	r := resp.NewConn(*conn)
 
 	action := "subscribe"
 	if withPattern {
@@ -58,40 +57,46 @@ func (ps *PubSub) Subscribe(_ context.Context, conn *net.Conn, channels []string
 		})
 
 		if channelIdx == -1 {
-			// Create new channel, start it, and subscribe to it
+			// Create new channel, if it does not exist
 			var newChan *Channel
 			if withPattern {
-				newChan = NewChannel(WithPattern(channels[i]))
+				newChan = NewChannel(ps.ctx, WithPattern(channels[i]))
 			} else {
-				newChan = NewChannel(WithName(channels[i]))
+				newChan = NewChannel(ps.ctx, WithName(channels[i]))
 			}
-			newChan.Start()
-			if newChan.Subscribe(conn) {
-				if err := r.WriteArray([]resp.Value{
-					resp.StringValue(action),
-					resp.StringValue(newChan.name),
-					resp.IntegerValue(i + 1),
-				}); err != nil {
-					log.Println(err)
-				}
+
+			// Subscribe to the channel
+			switch sub.(type) {
+			case *net.Conn:
+				// Subscribe TCP connection
+				conn := sub.(*net.Conn)
+				newChan.Subscribe(conn, action, i)
 				ps.channels = append(ps.channels, newChan)
+
+			case *io.Writer:
+				// Subscribe io.Writer from embedded client
+				w := sub.(*io.Writer)
+				newChan.Subscribe(w, action, i)
 			}
 		} else {
+
 			// Subscribe to existing channel
-			if ps.channels[channelIdx].Subscribe(conn) {
-				if err := r.WriteArray([]resp.Value{
-					resp.StringValue(action),
-					resp.StringValue(ps.channels[channelIdx].name),
-					resp.IntegerValue(i + 1),
-				}); err != nil {
-					log.Println(err)
-				}
+			switch sub.(type) {
+			case *net.Conn:
+				// Subscribe TCP connection
+				conn := sub.(*net.Conn)
+				ps.channels[channelIdx].Subscribe(conn, action, i)
+
+			case *io.Writer:
+				// Subscribe io.Writer from embedded client
+				w := sub.(*io.Writer)
+				ps.channels[channelIdx].Subscribe(w, action, i)
 			}
 		}
 	}
 }
 
-func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []string, withPattern bool) []byte {
+func (ps *PubSub) Unsubscribe(sub any, channels []string, withPattern bool) []byte {
 	ps.channelsRWMut.RLock()
 	defer ps.channelsRWMut.RUnlock()
 
@@ -111,7 +116,7 @@ func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []stri
 				if channel.pattern != nil { // Skip pattern channels
 					continue
 				}
-				if channel.Unsubscribe(conn) {
+				if channel.Unsubscribe(sub) {
 					unsubscribed[idx] = channel.name
 					idx += 1
 				}
@@ -123,7 +128,7 @@ func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []stri
 				if channel.pattern == nil { // Skip non-pattern channels
 					continue
 				}
-				if channel.Unsubscribe(conn) {
+				if channel.Unsubscribe(sub) {
 					unsubscribed[idx] = channel.name
 					idx += 1
 				}
@@ -136,7 +141,7 @@ func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []stri
 	// names exactly matches the pattern name.
 	for _, channel := range ps.channels { // For each channel in PubSub
 		for _, c := range channels { // For each channel name provided
-			if channel.name == c && channel.Unsubscribe(conn) {
+			if channel.name == c && channel.Unsubscribe(sub) {
 				unsubscribed[idx] = channel.name
 				idx += 1
 			}
@@ -151,7 +156,7 @@ func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []stri
 			for _, channel := range ps.channels {
 				// If it's a pattern channel, directly compare the patterns
 				if channel.pattern != nil && channel.name == pattern {
-					if channel.Unsubscribe(conn) {
+					if channel.Unsubscribe(sub) {
 						unsubscribed[idx] = channel.name
 						idx += 1
 					}
@@ -159,7 +164,7 @@ func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []stri
 				}
 				// If this is a regular channel, check if the channel name matches the pattern given
 				if g.Match(channel.name) {
-					if channel.Unsubscribe(conn) {
+					if channel.Unsubscribe(sub) {
 						unsubscribed[idx] = channel.name
 						idx += 1
 					}
@@ -176,7 +181,7 @@ func (ps *PubSub) Unsubscribe(_ context.Context, conn *net.Conn, channels []stri
 	return []byte(res)
 }
 
-func (ps *PubSub) Publish(_ context.Context, message string, channelName string) {
+func (ps *PubSub) Publish(message string, channelName string) {
 	ps.channelsRWMut.RLock()
 	defer ps.channelsRWMut.RUnlock()
 
