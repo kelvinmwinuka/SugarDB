@@ -131,7 +131,6 @@ func (ch *Channel) Subscribe(sub any, action string, chanIdx int) {
 		ch.tcpSubsRWMut.Lock()
 		defer ch.tcpSubsRWMut.Unlock()
 		conn := sub.(*net.Conn)
-		fmt.Println("FINAL CONNECTION: ", conn)
 		if _, ok := ch.tcpSubs[conn]; !ok {
 			ch.tcpSubs[conn] = resp.NewConn(*conn)
 		}
