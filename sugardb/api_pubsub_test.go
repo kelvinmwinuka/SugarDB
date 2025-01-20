@@ -15,13 +15,15 @@
 package sugardb
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 )
 
-func Test_Subscribe(t *testing.T) {
+func TestSugarDB_Subscribe(t *testing.T) {
 	server := createSugarDB()
 
 	// Subscribe to channels.
@@ -33,7 +35,14 @@ func Test_Subscribe(t *testing.T) {
 	}
 
 	for i := 0; i < len(channels); i++ {
-		message := readMessage()
+		b, err := readMessage.ReadBytes('\n')
+		if err != nil {
+			t.Errorf("SUBSCRIBE() read error: %+v", err)
+		}
+		var message []string
+		if err = json.Unmarshal(b, &message); err != nil {
+			t.Errorf("SUBSCRIBE() json unmarshal error: %+v", err)
+		}
 		// Check that we've received the subscribe messages.
 		if message[0] != "subscribe" {
 			t.Errorf("SUBSCRIBE() expected index 0 for message at %d to be \"subscribe\", got %s", i, message[0])
@@ -54,9 +63,21 @@ func Test_Subscribe(t *testing.T) {
 		}
 	}
 
+	// Yield to allow messages to be written to the buffer
+	ticker := time.NewTicker(1 * time.Millisecond)
+	defer ticker.Stop()
+	<-ticker.C
+
 	// Read messages from the channels
 	for i := 0; i < len(channels); i++ {
-		message := readMessage()
+		b, err := readMessage.ReadBytes('\n')
+		if err != nil {
+			t.Errorf("SUBSCRIBE() read error: %+v", err)
+		}
+		var message []string
+		if err = json.Unmarshal(b, &message); err != nil {
+			t.Errorf("SUBSCRIBE() json unmarshal error: %+v", err)
+		}
 		// Check that we've received the messages.
 		if message[0] != "message" {
 			t.Errorf("SUBSCRIBE() expected index 0 for message at %d to be \"message\", got %s", i, message[0])
@@ -81,11 +102,18 @@ func TestSugarDB_PSubscribe(t *testing.T) {
 	patterns := []string{"channel[12]", "pattern[12]"}
 	readMessage, err := server.PSubscribe(tag, patterns...)
 	if err != nil {
-		t.Errorf("PSubscribe() error = %v", err)
+		t.Errorf("PSUBSCRIBE() error = %v", err)
 	}
 
 	for i := 0; i < len(patterns); i++ {
-		message := readMessage()
+		b, err := readMessage.ReadBytes('\n')
+		if err != nil {
+			t.Errorf("PSUBSCRIBE() read error: %+v", err)
+		}
+		var message []string
+		if err = json.Unmarshal(b, &message); err != nil {
+			t.Errorf("PSUBSCRIBE() json unmarshal error: %+v", err)
+		}
 		// Check that we've received the subscribe messages.
 		if message[0] != "psubscribe" {
 			t.Errorf("PSUBSCRIBE() expected index 0 for message at %d to be \"psubscribe\", got %s", i, message[0])
@@ -106,19 +134,31 @@ func TestSugarDB_PSubscribe(t *testing.T) {
 		}
 	}
 
+	// Yield to allow messages to be written to the buffer
+	ticker := time.NewTicker(1 * time.Millisecond)
+	defer ticker.Stop()
+	<-ticker.C
+
 	// Read messages from the channels
 	for i := 0; i < len(patterns)*2; i++ {
-		message := readMessage()
+		b, err := readMessage.ReadBytes('\n')
+		if err != nil {
+			t.Errorf("PSUBSCRIBE() read error: %+v", err)
+		}
+		var message []string
+		if err = json.Unmarshal(b, &message); err != nil {
+			t.Errorf("PSUBSCRIBE() json unmarshal error: %+v", err)
+		}
 		// Check that we've received the messages.
 		if message[0] != "message" {
-			t.Errorf("SUBSCRIBE() expected index 0 for message at %d to be \"message\", got %s", i, message[0])
+			t.Errorf("PSUBSCRIBE() expected index 0 for message at %d to be \"message\", got %s", i, message[0])
 		}
 		if !slices.Contains(patterns, message[1]) {
-			t.Errorf("SUBSCRIBE() unexpected string \"%s\" at index 1 for message %d", message[1], i)
+			t.Errorf("PSUBSCRIBE() unexpected string \"%s\" at index 1 for message %d", message[1], i)
 		}
 		if !slices.Contains([]string{
 			"message for channel1", "message for channel2", "message for pattern1", "message for pattern2"}, message[2]) {
-			t.Errorf("SUBSCRIBE() unexpected string \"%s\" at index 1 for message %d", message[2], i)
+			t.Errorf("PSUBSCRIBE() unexpected string \"%s\" at index 1 for message %d", message[2], i)
 		}
 	}
 
@@ -150,23 +190,17 @@ func TestSugarDB_PubSubChannels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Subscribe to channels
-			readChannelMessages, err := server.Subscribe(tt.tag, tt.channels...)
+			_, err := server.Subscribe(tt.tag, tt.channels...)
 			if err != nil {
 				t.Errorf("PubSubChannels() error = %v", err)
 			}
 
-			for i := 0; i < len(tt.channels); i++ {
-				readChannelMessages()
-			}
 			// Subscribe to patterns
-			readPatternMessages, err := server.PSubscribe(tt.tag, tt.patterns...)
+			_, err = server.PSubscribe(tt.tag, tt.patterns...)
 			if err != nil {
 				t.Errorf("PubSubChannels() error = %v", err)
 			}
 
-			for i := 0; i < len(tt.patterns); i++ {
-				readPatternMessages()
-			}
 			got, err := server.PubSubChannels(tt.pattern)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("PubSubChannels() error = %v, wantErr %v", err, tt.wantErr)
@@ -204,13 +238,11 @@ func TestSugarDB_PubSubNumPat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Subscribe to patterns
-			readPatternMessages, err := server.PSubscribe(tt.tag, tt.patterns...)
+			_, err := server.PSubscribe(tt.tag, tt.patterns...)
 			if err != nil {
 				t.Errorf("PubSubNumPat() error = %v", err)
 			}
-			for i := 0; i < len(tt.patterns); i++ {
-				readPatternMessages()
-			}
+
 			got, err := server.PubSubNumPat()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("PubSubNumPat() error = %v, wantErr %v", err, tt.wantErr)
@@ -259,23 +291,20 @@ func TestSugarDB_PubSubNumSub(t *testing.T) {
 			wantErr:  false,
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			for tag, subs := range tt.subscriptions {
-				readPat, err := server.PSubscribe(tag, subs.patterns...)
+				_, err := server.PSubscribe(tag, subs.patterns...)
 				if err != nil {
 					t.Errorf("PubSubNumSub() error = %v", err)
 				}
-				for _, _ = range subs.patterns {
-					readPat()
-				}
-				readChan, err := server.Subscribe(tag, subs.channels...)
+
+				_, err = server.Subscribe(tag, subs.channels...)
 				if err != nil {
 					t.Errorf("PubSubNumSub() error = %v", err)
 				}
-				for _, _ = range subs.channels {
-					readChan()
-				}
+
 			}
 			got, err := server.PubSubNumSub(tt.channels...)
 			if (err != nil) != tt.wantErr {
