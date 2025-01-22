@@ -15,19 +15,20 @@
 package sugardb
 
 import (
-	"bufio"
 	"bytes"
 	"github.com/echovault/sugardb/internal"
+	"github.com/echovault/sugardb/internal/modules/pubsub"
 	"github.com/tidwall/resp"
 	"strings"
 	"sync"
 )
 
-type messageBuffer struct {
-	buff       []byte
-	buffer     *bytes.Buffer
-	buffWriter *bufio.Writer
-	buffReader *bufio.Reader
+type MessageReader struct {
+	embeddedSub *pubsub.EmbeddedSub
+}
+
+func (reader *MessageReader) Read(p []byte) (int, error) {
+	return reader.embeddedSub.Read(p)
 }
 
 var subscriptions sync.Map
@@ -42,26 +43,22 @@ var subscriptions sync.Map
 //
 // Returns: ReadPubSubMessage function which reads the next message sent to the subscription instance.
 // This function is blocking.
-func (server *SugarDB) Subscribe(tag string, channels ...string) (*bufio.Reader, error) {
-	var msgBuffer *messageBuffer
+func (server *SugarDB) Subscribe(tag string, channels ...string) (*MessageReader, error) {
+	var msgReader *MessageReader
 
 	sub, ok := subscriptions.Load(tag)
 	if !ok {
 		// Create new messageBuffer and store it in the subscriptions
-		msgBuffer = &messageBuffer{
-			buff: make([]byte, 0),
+		msgReader = &MessageReader{
+			embeddedSub: pubsub.NewEmbeddedSub(),
 		}
-		msgBuffer.buffer = bytes.NewBuffer(msgBuffer.buff)
-		msgBuffer.buffWriter = bufio.NewWriter(msgBuffer.buffer)
-		msgBuffer.buffReader = bufio.NewReader(msgBuffer.buffer)
-		subscriptions.Store(tag, msgBuffer)
 	} else {
-		msgBuffer = sub.(*messageBuffer)
+		msgReader = sub.(*MessageReader)
 	}
 
-	server.pubSub.Subscribe(msgBuffer.buffWriter, channels, false)
+	server.pubSub.Subscribe(msgReader.embeddedSub, channels, false)
 
-	return msgBuffer.buffReader, nil
+	return msgReader, nil
 }
 
 // Unsubscribe unsubscribes the caller from the given channels.
@@ -76,8 +73,8 @@ func (server *SugarDB) Unsubscribe(tag string, channels ...string) {
 	if !ok {
 		return
 	}
-	msgBuffer := sub.(*messageBuffer)
-	server.pubSub.Unsubscribe(msgBuffer.buffWriter, channels, false)
+	msgReader := sub.(*MessageReader)
+	server.pubSub.Unsubscribe(msgReader, channels, false)
 }
 
 // PSubscribe subscribes the caller to the list of provided glob patterns.
@@ -90,26 +87,23 @@ func (server *SugarDB) Unsubscribe(tag string, channels ...string) {
 //
 // Returns: ReadPubSubMessage function which reads the next message sent to the subscription instance.
 // This function is blocking.
-func (server *SugarDB) PSubscribe(tag string, patterns ...string) (*bufio.Reader, error) {
-	var msgBuffer *messageBuffer
+
+func (server *SugarDB) PSubscribe(tag string, patterns ...string) (*MessageReader, error) {
+	var msgReader *MessageReader
 
 	sub, ok := subscriptions.Load(tag)
 	if !ok {
 		// Create new messageBuffer and store it in the subscriptions
-		msgBuffer = &messageBuffer{
-			buff: make([]byte, 0),
+		msgReader = &MessageReader{
+			embeddedSub: pubsub.NewEmbeddedSub(),
 		}
-		msgBuffer.buffer = bytes.NewBuffer(msgBuffer.buff)
-		msgBuffer.buffWriter = bufio.NewWriter(msgBuffer.buffer)
-		msgBuffer.buffReader = bufio.NewReader(msgBuffer.buffer)
-		subscriptions.Store(tag, msgBuffer)
 	} else {
-		msgBuffer = sub.(*messageBuffer)
+		msgReader = sub.(*MessageReader)
 	}
 
-	server.pubSub.Subscribe(msgBuffer.buffWriter, patterns, true)
+	server.pubSub.Subscribe(msgReader.embeddedSub, patterns, true)
 
-	return msgBuffer.buffReader, nil
+	return msgReader, nil
 }
 
 // PUnsubscribe unsubscribes the caller from the given glob patterns.
@@ -124,8 +118,8 @@ func (server *SugarDB) PUnsubscribe(tag string, patterns ...string) {
 	if !ok {
 		return
 	}
-	msgBuffer := sub.(*messageBuffer)
-	server.pubSub.Unsubscribe(msgBuffer.buffWriter, patterns, true)
+	msgReader := sub.(*MessageReader)
+	server.pubSub.Unsubscribe(msgReader, patterns, true)
 }
 
 // Publish publishes a message to the given channel.

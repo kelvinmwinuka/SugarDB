@@ -15,7 +15,6 @@
 package pubsub
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -38,8 +37,8 @@ type Channel struct {
 	tcpSubs      map[*net.Conn]*resp.Conn // Map containing the channel's TCP subscribers.
 	tcpSubsRWMut sync.RWMutex             // RWMutex for accessing TCP channel subscribers.
 
-	embeddedSubs      []*bufio.Writer // Slice containing embedded subscribers to this channel.
-	embeddedSubsRWMut sync.RWMutex    // RWMutex for accessing embedded subscribers.
+	embeddedSubs      []*EmbeddedSub // Slice containing embedded subscribers to this channel.
+	embeddedSubsRWMut sync.RWMutex   // RWMutex for accessing embedded subscribers.
 }
 
 // WithName option sets the channels name.
@@ -68,7 +67,7 @@ func NewChannel(ctx context.Context, options ...func(channel *Channel)) *Channel
 		tcpSubs:      make(map[*net.Conn]*resp.Conn),
 		tcpSubsRWMut: sync.RWMutex{},
 
-		embeddedSubs:      make([]*bufio.Writer, 0),
+		embeddedSubs:      make([]*EmbeddedSub, 0),
 		embeddedSubsRWMut: sync.RWMutex{},
 	}
 	channel.messagesCond = sync.NewCond(&channel.messagesRWMut)
@@ -93,26 +92,48 @@ func NewChannel(ctx context.Context, options ...func(channel *Channel)) *Channel
 				channel.messages = channel.messages[1:]
 				channel.messagesRWMut.Unlock()
 
-				// Send messages to TCP subscribers
-				channel.tcpSubsRWMut.RLock()
-				for _, conn := range channel.tcpSubs {
-					_ = conn.WriteArray([]resp.Value{
-						resp.StringValue("message"),
-						resp.StringValue(channel.name),
-						resp.StringValue(message),
-					})
-				}
-				channel.tcpSubsRWMut.RUnlock()
+				wg := sync.WaitGroup{}
+				wg.Add(2)
 
 				// Send messages to embedded subscribers
-				channel.embeddedSubsRWMut.RLock()
-				b, _ := json.Marshal([]string{"message", channel.name, message})
-				for _, w := range channel.embeddedSubs {
-					_, _ = w.Write(b)
-					_ = w.WriteByte('\n')
-					_ = w.Flush()
-				}
-				channel.embeddedSubsRWMut.RUnlock()
+				go func() {
+					channel.embeddedSubsRWMut.RLock()
+					ewg := sync.WaitGroup{}
+					b, _ := json.Marshal([]string{"message", channel.name, message})
+					msg := append(b, byte('\n'))
+					for _, w := range channel.embeddedSubs {
+						ewg.Add(1)
+						go func(w *EmbeddedSub) {
+							_, _ = w.Write(msg)
+							ewg.Done()
+						}(w)
+					}
+					ewg.Wait()
+					channel.embeddedSubsRWMut.RUnlock()
+					wg.Done()
+				}()
+
+				// Send messages to TCP subscribers
+				go func() {
+					channel.tcpSubsRWMut.RLock()
+					cwg := sync.WaitGroup{}
+					for _, conn := range channel.tcpSubs {
+						cwg.Add(1)
+						go func(conn *resp.Conn) {
+							_ = conn.WriteArray([]resp.Value{
+								resp.StringValue("message"),
+								resp.StringValue(channel.name),
+								resp.StringValue(message),
+							})
+							cwg.Done()
+						}(conn)
+					}
+					cwg.Wait()
+					channel.tcpSubsRWMut.RUnlock()
+					wg.Done()
+				}()
+
+				wg.Wait()
 			}
 		}
 	}()
@@ -145,20 +166,19 @@ func (ch *Channel) Subscribe(sub any, action string, chanIdx int) {
 			resp.IntegerValue(chanIdx + 1),
 		})
 
-	case *bufio.Writer:
+	case *EmbeddedSub:
 		ch.embeddedSubsRWMut.Lock()
 		defer ch.embeddedSubsRWMut.Unlock()
-		w := sub.(*bufio.Writer)
-		if !slices.ContainsFunc(ch.embeddedSubs, func(writer *bufio.Writer) bool {
+		w := sub.(*EmbeddedSub)
+		if !slices.ContainsFunc(ch.embeddedSubs, func(writer *EmbeddedSub) bool {
 			return writer == w
 		}) {
 			ch.embeddedSubs = append(ch.embeddedSubs, w)
 		}
 		// Send subscription message
 		b, _ := json.Marshal([]string{action, ch.name, fmt.Sprintf("%d", chanIdx+1)})
-		_, _ = w.Write(b)
-		_ = w.WriteByte('\n')
-		_ = w.Flush()
+		msg := append(b, byte('\n'))
+		_, _ = w.Write(msg)
 	}
 }
 
@@ -177,12 +197,12 @@ func (ch *Channel) Unsubscribe(sub any) bool {
 		delete(ch.tcpSubs, conn)
 		return true
 
-	case *bufio.Writer:
+	case *EmbeddedSub:
 		ch.embeddedSubsRWMut.Lock()
 		defer ch.embeddedSubsRWMut.Unlock()
-		w := sub.(*bufio.Writer)
+		w := sub.(*EmbeddedSub)
 		deleted := false
-		ch.embeddedSubs = slices.DeleteFunc(ch.embeddedSubs, func(writer *bufio.Writer) bool {
+		ch.embeddedSubs = slices.DeleteFunc(ch.embeddedSubs, func(writer *EmbeddedSub) bool {
 			deleted = writer == w
 			return deleted
 		})

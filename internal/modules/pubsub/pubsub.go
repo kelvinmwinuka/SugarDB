@@ -15,7 +15,6 @@
 package pubsub
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -74,9 +73,9 @@ func (ps *PubSub) Subscribe(sub any, channels []string, withPattern bool) {
 				conn := sub.(*net.Conn)
 				newChan.Subscribe(conn, action, i)
 
-			case *bufio.Writer:
+			case *EmbeddedSub:
 				// Subscribe io.Writer from embedded client
-				w := sub.(*bufio.Writer)
+				w := sub.(*EmbeddedSub)
 				newChan.Subscribe(w, action, i)
 			}
 		} else {
@@ -87,9 +86,9 @@ func (ps *PubSub) Subscribe(sub any, channels []string, withPattern bool) {
 				conn := sub.(*net.Conn)
 				ps.channels[channelIdx].Subscribe(conn, action, i)
 
-			case *bufio.Writer:
+			case *EmbeddedSub:
 				// Subscribe io.Writer from embedded client
-				w := sub.(*bufio.Writer)
+				w := sub.(*EmbeddedSub)
 				ps.channels[channelIdx].Subscribe(w, action, i)
 			}
 		}
