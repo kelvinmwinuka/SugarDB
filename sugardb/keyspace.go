@@ -21,6 +21,7 @@ import (
 	"github.com/echovault/sugardb/internal/events"
 	"log"
 	"math/rand"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -625,101 +626,100 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 // This function will sample 20 keys from the list of keys with an associated TTL,
 // if the key is expired, it will be evicted.
 // This function is only executed in standalone mode or by the raft cluster leader.
-// TODO: Uncomment this
-// func (server *SugarDB) evictKeysWithExpiredTTL(ctx context.Context) error {
-// 	// Only execute this if we're in standalone mode, or raft cluster leader.
-// 	if server.isInCluster() && !server.raft.IsRaftLeader() {
-// 		return nil
-// 	}
-//
-// 	server.keysWithExpiry.rwMutex.RLock()
-//
-// 	database := ctx.Value("Database").(int)
-//
-// 	// Sample size should be the configured sample size, or the size of the keys with expiry,
-// 	// whichever one is smaller.
-// 	sampleSize := int(server.config.EvictionSample)
-// 	if len(server.keysWithExpiry.keys[database]) < sampleSize {
-// 		sampleSize = len(server.keysWithExpiry.keys)
-// 	}
-// 	keys := make([]string, sampleSize)
-//
-// 	deletedCount := 0
-// 	thresholdPercentage := 20
-//
-// 	var idx int
-// 	var key string
-// 	for i := 0; i < len(keys); i++ {
-// 		for {
-// 			// Retry retrieval of a random key until we find a key that is not already in the list of sampled keys.
-// 			idx = rand.Intn(len(server.keysWithExpiry.keys))
-// 			key = server.keysWithExpiry.keys[database][idx]
-// 			if !slices.Contains(keys, key) {
-// 				keys[i] = key
-// 				break
-// 			}
-// 		}
-// 	}
-// 	server.keysWithExpiry.rwMutex.RUnlock()
-//
-// 	// Loop through the keys and delete them if they're expired
-// 	server.storeLock.Lock()
-// 	defer server.storeLock.Unlock()
-// 	for _, k := range keys {
-//
-// 		// handle keys within a hash type value
-// 		value := server.store[database][k].Value
-// 		t := reflect.TypeOf(value)
-// 		if t.Kind() == reflect.Map {
-//
-// 			hashkey, ok := server.store[database][k].Value.(hash.Hash)
-// 			if !ok {
-// 				return fmt.Errorf("Hash value should contain type HashValue, but type %s was found.", t.Elem().Name())
-// 			}
-//
-// 			for k, v := range hashkey {
-// 				if v.ExpireAt.Before(time.Now()) {
-// 					delete(hashkey, k)
-// 				}
-// 			}
-//
-// 		}
-//
-// 		// Check if key is expired, move on if it's not
-// 		ExpireTime := server.store[database][k].ExpireAt
-// 		if ExpireTime.Before(time.Now()) {
-// 			continue
-// 		}
-//
-// 		// Delete the expired key
-// 		deletedCount += 1
-// 		if !server.isInCluster() {
-// 			if err := server.deleteKeys(ctx, k); err != nil {
-// 				return fmt.Errorf("evictKeysWithExpiredTTL -> standalone delete: %+v", err)
-// 			}
-// 		} else if server.isInCluster() && server.raft.IsRaftLeader() {
-// 			if err := server.raftApplyDeleteKeys(ctx, k); err != nil {
-// 				return fmt.Errorf("evictKeysWithExpiredTTL -> cluster delete: %+v", err)
-// 			}
-// 		}
-// 	}
-//
-// 	// If sampleSize is 0, there's no need to calculate deleted percentage.
-// 	if sampleSize == 0 {
-// 		return nil
-// 	}
-//
-// 	log.Printf("%d keys sampled, %d keys deleted\n", sampleSize, deletedCount)
-//
-// 	// If the deleted percentage is over 20% of the sample size, execute the function again immediately.
-// 	if (deletedCount/sampleSize)*100 >= thresholdPercentage {
-// 		log.Printf("deletion ratio (%d percent) reached threshold (%d percent), sampling again\n",
-// 			(deletedCount/sampleSize)*100, thresholdPercentage)
-// 		return server.evictKeysWithExpiredTTL(ctx)
-// 	}
-//
-// 	return nil
-// }
+func (server *SugarDB) evictKeysWithExpiredTTL(ctx context.Context) error {
+	// Only execute this if we're in standalone mode, or raft cluster leader.
+	if server.isInCluster() && !server.raft.IsRaftLeader() {
+		return nil
+	}
+
+	server.keysWithExpiry.rwMutex.RLock()
+
+	database := ctx.Value("Database").(int)
+
+	// Sample size should be the configured sample size, or the size of the keys with expiry,
+	// whichever one is smaller.
+	sampleSize := int(server.config.EvictionSample)
+	if len(server.keysWithExpiry.keys[database]) < sampleSize {
+		sampleSize = len(server.keysWithExpiry.keys)
+	}
+	keys := make([]string, sampleSize)
+
+	var deletedKeys []string
+	thresholdPercentage := 20
+
+	var idx int
+	var key string
+	for i := 0; i < len(keys); i++ {
+		for {
+			// Retry retrieval of a random key until we find a key that is not already in the list of sampled keys.
+			idx = rand.Intn(len(server.keysWithExpiry.keys))
+			key = server.keysWithExpiry.keys[database][idx]
+			if !slices.Contains(keys, key) {
+				keys[i] = key
+				break
+			}
+		}
+	}
+	server.keysWithExpiry.rwMutex.RUnlock()
+
+	// Loop through the keys and delete them if they're expired
+	for _, k := range keys {
+		// handle keys within a hash type value
+		value := server.store[database][k].Value
+		t := reflect.TypeOf(value)
+		if t.Kind() == reflect.Map {
+
+			hashKey, ok := server.store[database][k].Value.(hash.Hash)
+			if !ok {
+				return fmt.Errorf("hash value should contain type HashValue, but type %s was found", t.Elem().Name())
+			}
+
+			for k, v := range hashKey {
+				if v.ExpireAt.Before(time.Now()) {
+					delete(hashKey, k)
+				}
+			}
+
+		}
+
+		// Check if key is expired, move on if it's not
+		ExpireTime := server.store[database][k].ExpireAt
+		if ExpireTime.Before(time.Now()) {
+			continue
+		}
+
+		// Update the expired keys to delete
+		deletedKeys = append(deletedKeys, k)
+	}
+
+	if !server.isInCluster() {
+		if err := server.deleteKeys(ctx, deletedKeys); err != nil {
+			return fmt.Errorf("evictKeysWithExpiredTTL -> standalone delete: %+v", err)
+		}
+	} else if server.isInCluster() && server.raft.IsRaftLeader() {
+		if err := server.raftApplyDeleteKeys(ctx, deletedKeys); err != nil {
+			return fmt.Errorf("evictKeysWithExpiredTTL -> cluster delete: %+v", err)
+		}
+	}
+
+	// If sampleSize is 0, there's no need to calculate deleted percentage.
+	if sampleSize == 0 {
+		return nil
+	}
+
+	deletedCount := len(deletedKeys)
+
+	log.Printf("%d keys sampled, %d keys deleted\n", sampleSize, deletedCount)
+
+	// If the deleted percentage is over 20% of the sample size, execute the function again immediately.
+	if (deletedCount/sampleSize)*100 >= thresholdPercentage {
+		log.Printf("deletion ratio (%d percent) reached threshold (%d percent), sampling again\n",
+			(deletedCount/sampleSize)*100, thresholdPercentage)
+		return server.evictKeysWithExpiredTTL(ctx)
+	}
+
+	return nil
+}
 
 func (server *SugarDB) randomKey(ctx context.Context) string {
 	database := ctx.Value("Database").(int)

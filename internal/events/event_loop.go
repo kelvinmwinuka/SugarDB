@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"log"
-	"net"
 	"sync"
 )
 
@@ -43,11 +42,8 @@ func (h *eventHeap) Push(e any) {
 }
 
 type EventQueue struct {
-	eventHeap          eventHeap
-	mux                sync.Mutex
-	commandHandlerFunc func(
-		ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool,
-	) ([]byte, error)
+	eventHeap eventHeap
+	mux       sync.Mutex
 }
 
 func (queue *EventQueue) Enqueue(e Event) {
@@ -58,28 +54,21 @@ func (queue *EventQueue) Enqueue(e Event) {
 	// log.Printf("event queued: %#+v\n", e)
 }
 
-func (queue *EventQueue) dequeue() Event {
+func (queue *EventQueue) dequeue() any {
 	queue.mux.Lock()
 	defer queue.mux.Unlock()
+	if queue.len() == 0 {
+		return nil
+	}
 	e := heap.Pop(&queue.eventHeap).(Event)
 	return e
 }
 
 func (queue *EventQueue) len() int {
-	queue.mux.Lock()
-	defer queue.mux.Unlock()
 	return (&queue.eventHeap).Len()
 }
 
-func WithCommandHandlerFunc(commandHandlerFunc func(
-	ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool,
-) ([]byte, error)) func(queue *EventQueue) {
-	return func(queue *EventQueue) {
-		queue.commandHandlerFunc = commandHandlerFunc
-	}
-}
-
-func NewEventQueue(options ...func(queue *EventQueue)) *EventQueue {
+func NewEventQueue(ctx context.Context) *EventQueue {
 	queue := &EventQueue{
 		eventHeap: make(eventHeap, 0),
 		mux:       sync.Mutex{},
@@ -87,50 +76,66 @@ func NewEventQueue(options ...func(queue *EventQueue)) *EventQueue {
 
 	heap.Init(&queue.eventHeap)
 
-	for _, option := range options {
-		option(queue)
-	}
-
 	go func() {
 		for {
-			if queue.len() == 0 {
-				continue
-			}
-			e := queue.dequeue()
-			log.Printf("processing event: %#+v\n", e)
-			switch e.Kind {
-
+			select {
+			case <-ctx.Done():
+				log.Println("closing event loop...")
+				return
 			default:
-				log.Printf("could not process event: %#+v\n", e)
-
-			case EVENT_KIND_COMMAND:
-				// Handle command event
-				if err := e.Handler(); err != nil {
-					log.Printf("error %+v on command event: %+v", err, e)
+				event := queue.dequeue()
+				if event == nil {
+					continue
 				}
+				e := event.(Event)
 
-			case EVENT_KIND_DELETE_KEY:
-				// Handle delete key event
-				if err := e.Handler(); err != nil {
-					log.Printf("error %+v on delete keys event: %+v", err, e)
-				}
+				// log.Printf("processing event: %#+v\n", e)
 
-			case EVENT_KIND_UPDATE_KEYS_IN_CACHE:
-				// Handle events to update key status in caches (lfu, lru)
-				if err := e.Handler(); err != nil {
-					log.Printf("error %+v on update keys in cache event: %+v", err, e)
-				}
+				switch e.Kind {
 
-			case EVENT_KIND_SNAPSHOT:
-				// Handle snapshot event
-				if err := e.Handler(); err != nil {
-					log.Printf("error %+v on snapshot event: %+v", err, e)
-				}
+				default:
+					log.Printf("could not process event: %#+v\n", e)
 
-			case EVENT_KIND_UPDATE_CONFIG:
-				// Handle config update event
-				if err := e.Handler(); err != nil {
-					log.Printf("error %+v on update config event: %+v", err, e)
+				case EVENT_KIND_COMMAND:
+					// Handle command event
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on command event: %+v", err, e)
+					}
+
+				case EVENT_KIND_DELETE_KEY:
+					// Handle delete key event
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on delete keys event: %+v", err, e)
+					}
+
+				case EVENT_KIND_UPDATE_KEYS_IN_CACHE:
+					// Handle events to update key status in caches (lfu, lru)
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on update keys in cache event: %+v", err, e)
+					}
+
+				case EVENT_KIND_SNAPSHOT:
+					// Handle snapshot event
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on snapshot event: %+v", err, e)
+					}
+
+				case EVENT_KIND_UPDATE_CONFIG:
+					// Handle config update event
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on update config event: %+v", err, e)
+					}
+
+				case EVENT_KIND_REWEIRE_AOF:
+					// Handle rewrite aof event
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on rewrite aof event: %+v", err, e)
+					}
+
+				case EVENT_KIND_TTL_EVICTION:
+					if err := e.Handler(); err != nil {
+						log.Printf("error %+v on ttl eviction event: %+v", err, e)
+					}
 				}
 			}
 		}

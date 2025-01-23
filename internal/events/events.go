@@ -19,6 +19,8 @@ var (
 	EVENT_KIND_DELETE_KEY           = EventKind("delete-key")
 	EVENT_KIND_UPDATE_KEYS_IN_CACHE = EventKind("update-keys-in-cache")
 	EVENT_KIND_UPDATE_CONFIG        = EventKind("update-config")
+	EVENT_KIND_REWEIRE_AOF          = EventKind("rewrite-aof")
+	EVENT_KIND_TTL_EVICTION         = EventKind("ttl-eviction")
 )
 
 type Event struct {

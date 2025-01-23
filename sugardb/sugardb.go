@@ -24,6 +24,7 @@ import (
 	"github.com/echovault/sugardb/internal/aof"
 	"github.com/echovault/sugardb/internal/clock"
 	"github.com/echovault/sugardb/internal/config"
+	"github.com/echovault/sugardb/internal/constants"
 	"github.com/echovault/sugardb/internal/events"
 	"github.com/echovault/sugardb/internal/eviction"
 	"github.com/echovault/sugardb/internal/memberlist"
@@ -108,6 +109,7 @@ type SugarDB struct {
 
 	commandsRWMut sync.RWMutex       // Mutex used for modifying/reading the list of commands in the instance.
 	commands      []internal.Command // Holds the list of all commands supported by SugarDB.
+
 	// Each commands that's added using a script (lua,js), will have a lock associated with the command.
 	// Only one goroutine will be able to trigger a script-associated command at a time. This is because the VM state
 	// for each of the commands is not thread safe.
@@ -117,28 +119,27 @@ type SugarDB struct {
 	raft       *raft.Raft             // The raft replication layer for SugarDB.
 	memberList *memberlist.MemberList // The memberlist layer for SugarDB.
 
-	context context.Context
+	context           context.Context
+	contextCancelFunc context.CancelFunc
 
 	acl    *acl.ACL
 	pubSub *pubsub.PubSub
 
-	rewriteAOFInProgress       atomic.Bool      // Atomic boolean that's true when actively rewriting AOF file is in progress.
 	latestSnapshotMilliseconds atomic.Int64     // Unix epoch in milliseconds.
 	snapshotEngine             *snapshot.Engine // Snapshot engine for standalone mode.
 	aofEngine                  *aof.Engine      // AOF engine for standalone mode.
 
-	listener atomic.Value  // Holds the TCP listener.
-	quit     chan struct{} // Channel that signals the closing of all client connections.
-	stopTTL  chan struct{} // Channel that signals the TTL sampling goroutine to stop execution.
+	listener atomic.Value // Holds the TCP listener.
 }
 
 // NewSugarDB creates a new SugarDB instance.
 // This functions accepts the WithContext, WithConfig and WithCommands options.
 func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	sugarDB := &SugarDB{
-		clock:   clock.NewClock(),
-		context: context.Background(),
-		config:  config.DefaultConfig(),
+		clock:             clock.NewClock(),
+		context:           context.Background(),
+		contextCancelFunc: func() {},
+		config:            config.DefaultConfig(),
 		connInfo: struct {
 			mut        *sync.RWMutex
 			tcpClients map[*net.Conn]internal.ConnectionInfo
@@ -178,24 +179,19 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			commands = append(commands, str.Commands()...)
 			return commands
 		}(),
-		quit:    make(chan struct{}),
-		stopTTL: make(chan struct{}),
 	}
 
 	for _, option := range options {
 		option(sugarDB)
 	}
 
-	// Setup event queue
-	eventQueue := events.NewEventQueue(
-		events.WithCommandHandlerFunc(sugarDB.handleCommand),
-	)
-	sugarDB.eventQueue = eventQueue
-
-	sugarDB.context = context.WithValue(
+	sugarDB.context, sugarDB.contextCancelFunc = context.WithCancel(context.WithValue(
 		sugarDB.context, "ServerID",
 		internal.ContextServerID(sugarDB.config.ServerID),
-	)
+	))
+
+	// Setup event queue
+	sugarDB.eventQueue = events.NewEventQueue(sugarDB.context)
 
 	// Load .so modules from config
 	for _, path := range sugarDB.config.Modules {
@@ -210,7 +206,7 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	sugarDB.acl = acl.NewACL(sugarDB.config)
 
 	// Set up Pub/Sub module
-	sugarDB.pubSub = pubsub.NewPubSub()
+	sugarDB.pubSub = pubsub.NewPubSub(sugarDB.context)
 
 	if sugarDB.isInCluster() {
 		sugarDB.raft = raft.NewRaft(raft.Opts{
@@ -240,6 +236,7 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	} else {
 		// Set up standalone snapshot engine
 		sugarDB.snapshotEngine = snapshot.NewSnapshotEngine(
+			sugarDB.context,
 			snapshot.WithClock(sugarDB.clock),
 			snapshot.WithDirectory(sugarDB.config.DataDir),
 			snapshot.WithStore(sugarDB.store, sugarDB.storeLock),
@@ -261,12 +258,11 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 
 		// Set up standalone AOF engine
 		aofEngine, err := aof.NewAOFEngine(
-			aof.WithStore(sugarDB.store),
+			sugarDB.context,
+			aof.WithStore(sugarDB.store, sugarDB.storeLock),
 			aof.WithClock(sugarDB.clock),
 			aof.WithDirectory(sugarDB.config.DataDir),
 			aof.WithStrategy(sugarDB.config.AOFSyncStrategy),
-			aof.WithStartRewriteFunc(sugarDB.startRewriteAOF),
-			aof.WithFinishRewriteFunc(sugarDB.finishRewriteAOF),
 			aof.WithSetKeyDataFunc(func(database int, key string, value internal.KeyData) {
 				ctx := context.WithValue(context.Background(), "Database", database)
 				if err := sugarDB.setValues(ctx, map[string]interface{}{key: value.Value}); err != nil {
@@ -290,35 +286,59 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	}
 
 	// If eviction policy is not noeviction, start a goroutine to evict keys at the configured interval.
-	// TODO: Uncomment this
-	// if sugarDB.config.EvictionPolicy != constants.NoEviction {
-	// 	go func() {
-	// 		ticker := time.NewTicker(sugarDB.config.EvictionInterval)
-	// 		defer func() {
-	// 			ticker.Stop()
-	// 		}()
-	// 		for {
-	// 			select {
-	// 			case <-ticker.C:
-	// 				// Run key eviction for each database that has volatile keys.
-	// 				wg := sync.WaitGroup{}
-	// 				for database, _ := range sugarDB.keysWithExpiry.keys {
-	// 					wg.Add(1)
-	// 					ctx := context.WithValue(context.Background(), "Database", database)
-	// 					go func(ctx context.Context, wg *sync.WaitGroup) {
-	// 						if err := sugarDB.evictKeysWithExpiredTTL(ctx); err != nil {
-	// 							log.Printf("evict with ttl: %v\n", err)
-	// 						}
-	// 						wg.Done()
-	// 					}(ctx, &wg)
-	// 				}
-	// 				wg.Wait()
-	// 			case <-sugarDB.stopTTL:
-	// 				break
-	// 			}
-	// 		}
-	// 	}()
-	// }
+
+	if sugarDB.config.EvictionPolicy != constants.NoEviction {
+		go func() {
+			ticker := time.NewTicker(sugarDB.config.EvictionInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sugarDB.context.Done():
+					log.Println("stopping ttl goroutine...")
+					return
+				case <-ticker.C:
+					// Emit event for key eviction in databases that have volatile keys.
+					sugarDB.eventQueue.Enqueue(events.Event{
+						Kind:     events.EVENT_KIND_TTL_EVICTION,
+						Priority: events.EVENT_PRIORITY_HIGH,
+						Time:     sugarDB.clock.Now(),
+						Handler: func() error {
+							sugarDB.storeLock.Lock()
+							defer sugarDB.storeLock.Unlock()
+
+							errs := make(map[int]error)
+							errMut := sync.Mutex{}
+
+							wg := sync.WaitGroup{}
+							for db, _ := range sugarDB.keysWithExpiry.keys {
+								wg.Add(1)
+								go func(database int, wg *sync.WaitGroup) {
+									ctx := context.WithValue(context.Background(), "Database", database)
+									if err := sugarDB.evictKeysWithExpiredTTL(ctx); err != nil {
+										errMut.Lock()
+										errs[database] = err
+										errMut.Unlock()
+									}
+									wg.Done()
+								}(db, &wg)
+							}
+							wg.Wait()
+
+							// Construct composite error from the errors returned from each database, if any.
+							errStr := ""
+							for _, err := range errs {
+								errStr += fmt.Sprintf(", %s", err.Error())
+							}
+							if len(errStr) > 0 {
+								return errors.New(errStr)
+							}
+							return nil
+						},
+					})
+				}
+			}
+		}()
+	}
 
 	if sugarDB.config.TLS && len(sugarDB.config.CertKeyPairs) <= 0 {
 		return nil, errors.New("must provide certificate and key file paths for TLS mode")
@@ -427,7 +447,7 @@ func (server *SugarDB) startTCP() {
 	// Listen to connection.
 	for {
 		select {
-		case <-server.quit:
+		case <-server.context.Done():
 			return
 		default:
 			conn, err := listener.Accept()
@@ -472,69 +492,74 @@ func (server *SugarDB) handleConnection(conn net.Conn) {
 	}()
 
 	for {
-		message, err := internal.ReadMessage(r)
-
-		if err != nil && errors.Is(err, io.EOF) {
-			// Connection closed
-			log.Println(err)
+		select {
+		case <-server.context.Done():
 			break
-		}
+		default:
+			message, err := internal.ReadMessage(r)
 
-		if err != nil {
-			log.Println(err)
-			break
-		}
+			if err != nil && errors.Is(err, io.EOF) {
+				// Connection closed
+				log.Println(err)
+				break
+			}
 
-		// If the message is empty, break the loop
-		// an empty message will be read when the client runs the "quit" command.
-		if len(message) == 0 {
-			break
-		}
+			if err != nil {
+				log.Println(err)
+				break
+			}
 
-		// Add this command to the event queue
-		server.eventQueue.Enqueue(events.Event{
-			Kind:     events.EVENT_KIND_COMMAND,
-			Priority: events.EVENT_PRIORITY_MEDIUM,
-			Time:     server.clock.Now(),
-			Handler: func() error {
-				w := io.Writer(conn)
-				res, err := server.handleCommand(ctx, message, &conn, false, false)
-				if err != nil {
-					_, _ = w.Write([]byte(fmt.Sprintf("-Error %s\r\n", err.Error())))
-				}
+			// If the message is empty, break the loop
+			// an empty message will be read when the client runs the "quit" command.
+			if len(message) == 0 {
+				break
+			}
 
-				chunkSize := 1024
+			// Add this command to the event queue
+			server.eventQueue.Enqueue(events.Event{
+				Kind:     events.EVENT_KIND_COMMAND,
+				Priority: events.EVENT_PRIORITY_MEDIUM,
+				Time:     server.clock.Now(),
+				Handler: func() error {
+					w := io.Writer(conn)
+					res, err := server.handleCommand(ctx, message, &conn, false, false)
+					if err != nil {
+						_, _ = w.Write([]byte(fmt.Sprintf("-Error %s\r\n", err.Error())))
+					}
 
-				// If the length of the response is 0, return nothing to the client.
-				if len(res) == 0 {
-					return nil
-				}
+					chunkSize := 1024
 
-				if len(res) <= chunkSize {
-					_, _ = w.Write(res)
-					return nil
-				}
+					// If the length of the response is 0, return nothing to the client.
+					if len(res) == 0 {
+						return nil
+					}
 
-				// If the response is large, send it in chunks.
-				startIndex := 0
-				for {
-					// If the current start index is less than chunkSize from length, return the remaining bytes.
-					if len(res)-1-startIndex < chunkSize {
-						_, err = w.Write(res[startIndex:])
-						if err != nil {
-							log.Println(err)
+					if len(res) <= chunkSize {
+						_, _ = w.Write(res)
+						return nil
+					}
+
+					// If the response is large, send it in chunks.
+					startIndex := 0
+					for {
+						// If the current start index is less than chunkSize from length, return the remaining bytes.
+						if len(res)-1-startIndex < chunkSize {
+							_, err = w.Write(res[startIndex:])
+							if err != nil {
+								log.Println(err)
+							}
+							break
 						}
-						break
+						n, _ := w.Write(res[startIndex : startIndex+chunkSize])
+						if n < chunkSize {
+							break
+						}
+						startIndex += chunkSize
 					}
-					n, _ := w.Write(res[startIndex : startIndex+chunkSize])
-					if n < chunkSize {
-						break
-					}
-					startIndex += chunkSize
-				}
-				return nil
-			},
-		})
+					return nil
+				},
+			})
+		}
 	}
 }
 
@@ -572,32 +597,10 @@ func (server *SugarDB) getLatestSnapshotTime() int64 {
 	return server.latestSnapshotMilliseconds.Load()
 }
 
-func (server *SugarDB) startRewriteAOF() {
-	server.rewriteAOFInProgress.Store(true)
-}
-
-func (server *SugarDB) finishRewriteAOF() {
-	server.rewriteAOFInProgress.Store(false)
-}
-
-// rewriteAOF triggers an AOF compaction when running in standalone mode.
-func (server *SugarDB) rewriteAOF() error {
-	if server.rewriteAOFInProgress.Load() {
-		return errors.New("aof rewrite in progress")
-	}
-	if err := server.aofEngine.RewriteLog(); err != nil {
-		return err
-	}
-	return nil
-}
-
 // ShutDown gracefully shuts down the SugarDB instance.
 // This function shuts down the memberlist and raft layers.
 func (server *SugarDB) ShutDown() {
 	if server.listener.Load() != nil {
-		go func() { server.quit <- struct{}{} }()
-		go func() { server.stopTTL <- struct{}{} }()
-
 		log.Println("closing tcp listener...")
 		if err := server.listener.Load().(net.Listener).Close(); err != nil {
 			log.Printf("listener close: %v\n", err)
@@ -627,14 +630,13 @@ func (server *SugarDB) ShutDown() {
 	}
 	server.commandsRWMut.Unlock()
 
-	if !server.isInCluster() {
-		// Server is not in cluster, run standalone-only shutdown processes.
-		server.aofEngine.Close()
-	} else {
+	if server.isInCluster() {
 		// Server is in cluster, run cluster-only shutdown processes.
 		server.raft.RaftShutdown()
 		server.memberList.MemberListShutdown()
 	}
+
+	server.contextCancelFunc()
 }
 
 func (server *SugarDB) initialiseCaches() {
