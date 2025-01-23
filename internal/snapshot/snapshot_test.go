@@ -15,35 +15,28 @@
 package snapshot_test
 
 import (
+	"context"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/clock"
 	"github.com/echovault/sugardb/internal/snapshot"
 	"os"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
 
 func Test_SnapshotEngine(t *testing.T) {
-	mockClock := clock.NewClock()
 	directory := "./testdata"
+
+	t.Cleanup(func() {
+		_ = os.RemoveAll(directory)
+	})
+
+	mockClock := clock.NewClock()
 	var threshold uint64 = 5
 
-	var snapshotInProgress atomic.Bool
-	startSnapshotFunc := func() {
-		if snapshotInProgress.Load() {
-			t.Error("expected snapshotInProgress to be false, got true")
-		}
-		snapshotInProgress.Store(true)
-	}
-	finishSnapshotFunc := func() {
-		if !snapshotInProgress.Load() {
-			t.Error("expected snapshotInProgress to be true, got false")
-		}
-		snapshotInProgress.Store(false)
-	}
-
+	stateLock := &sync.RWMutex{}
 	state := map[int]map[string]internal.KeyData{
 		0: {
 			"key1": {Value: "value-01", ExpireAt: clock.NewClock().Now().Add(13 * time.Second)},
@@ -59,10 +52,6 @@ func Test_SnapshotEngine(t *testing.T) {
 			"key4": {Value: "value4", ExpireAt: clock.NewClock().Now().Add(23 * time.Second)},
 			"key5": {Value: "value5", ExpireAt: clock.NewClock().Now().Add(121 * time.Millisecond)},
 		},
-	}
-
-	getStateFunc := func() map[int]map[string]internal.KeyData {
-		return state
 	}
 
 	restoredState := make(map[int]map[string]internal.KeyData)
@@ -82,13 +71,12 @@ func Test_SnapshotEngine(t *testing.T) {
 	}
 
 	snapshotEngine := snapshot.NewSnapshotEngine(
+		context.Background(),
+		snapshot.WithStore(state, stateLock),
 		snapshot.WithClock(mockClock),
 		snapshot.WithDirectory(directory),
 		snapshot.WithInterval(10*time.Millisecond),
 		snapshot.WithThreshold(threshold),
-		snapshot.WithStartSnapshotFunc(startSnapshotFunc),
-		snapshot.WithFinishSnapshotFunc(finishSnapshotFunc),
-		snapshot.WithGetStateFunc(getStateFunc),
 		snapshot.WithSetKeyDataFunc(setKeyDataFunc),
 		snapshot.WithSetLatestSnapshotTimeFunc(setLatestSnapshotTimeFunc),
 		snapshot.WithGetLatestSnapshotTimeFunc(getLatestSnapshotTimeFunc),
@@ -132,5 +120,4 @@ func Test_SnapshotEngine(t *testing.T) {
 		}
 	}
 
-	_ = os.RemoveAll(directory)
 }

@@ -15,6 +15,7 @@
 package snapshot
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"errors"
@@ -114,7 +115,7 @@ func WithEmitEventFunc(f func(e events.Event)) func(engine *Engine) {
 	}
 }
 
-func NewSnapshotEngine(options ...func(engine *Engine)) *Engine {
+func NewSnapshotEngine(ctx context.Context, options ...func(engine *Engine)) *Engine {
 	engine := &Engine{
 		store:                     make(map[int]map[string]internal.KeyData),
 		clock:                     clock.NewClock(),
@@ -137,23 +138,26 @@ func NewSnapshotEngine(options ...func(engine *Engine)) *Engine {
 	if engine.snapshotInterval != 0 {
 		go func() {
 			ticker := time.NewTicker(engine.snapshotInterval)
-			defer func() {
-				ticker.Stop()
-			}()
+			defer ticker.Stop()
 			for {
-				<-ticker.C
-				if engine.changeCount.Load() == engine.snapshotThreshold {
-					// Emit event to take snapshot
-					engine.emitSnapshotEventFunc(events.Event{
-						Kind:     events.EVENT_KIND_SNAPSHOT,
-						Priority: events.EVENT_PRIORITY_HIGH,
-						Time:     engine.clock.Now(),
-						Handler: func() error {
-							engine.storeLock.RLock()
-							defer engine.storeLock.RUnlock()
-							return engine.TakeSnapshot()
-						},
-					})
+				select {
+				case <-ctx.Done():
+					log.Println("closing snapshot goroutine...")
+					return
+				case <-ticker.C:
+					if engine.changeCount.Load() == engine.snapshotThreshold {
+						// Emit event to take snapshot
+						engine.emitSnapshotEventFunc(events.Event{
+							Kind:     events.EVENT_KIND_SNAPSHOT,
+							Priority: events.EVENT_PRIORITY_HIGH,
+							Time:     engine.clock.Now(),
+							Handler: func() error {
+								engine.storeLock.RLock()
+								defer engine.storeLock.RUnlock()
+								return engine.TakeSnapshot()
+							},
+						})
+					}
 				}
 			}
 		}()
