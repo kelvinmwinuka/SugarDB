@@ -17,6 +17,7 @@
 package aof
 
 import (
+	"context"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	logstore "github.com/echovault/sugardb/internal/aof/log"
@@ -28,6 +29,7 @@ import (
 
 type Engine struct {
 	store        map[int]map[string]internal.KeyData
+	storeLock    *sync.RWMutex
 	clock        clock.Clock
 	syncStrategy string
 	directory    string
@@ -39,15 +41,14 @@ type Engine struct {
 	preambleStore *preamble.Store
 	appendStore   *logstore.Store
 
-	startRewriteFunc  func()
-	finishRewriteFunc func()
-	setKeyDataFunc    func(database int, key string, data internal.KeyData)
-	handleCommand     func(database int, command []byte)
+	setKeyDataFunc func(database int, key string, data internal.KeyData)
+	handleCommand  func(database int, command []byte)
 }
 
-func WithStore(store map[int]map[string]internal.KeyData) func(engine *Engine) {
+func WithStore(store map[int]map[string]internal.KeyData, storeLock *sync.RWMutex) func(engine *Engine) {
 	return func(engine *Engine) {
 		engine.store = store
+		engine.storeLock = storeLock
 	}
 }
 
@@ -66,18 +67,6 @@ func WithStrategy(strategy string) func(engine *Engine) {
 func WithDirectory(directory string) func(engine *Engine) {
 	return func(engine *Engine) {
 		engine.directory = directory
-	}
-}
-
-func WithStartRewriteFunc(f func()) func(engine *Engine) {
-	return func(engine *Engine) {
-		engine.startRewriteFunc = f
-	}
-}
-
-func WithFinishRewriteFunc(f func()) func(engine *Engine) {
-	return func(engine *Engine) {
-		engine.finishRewriteFunc = f
 	}
 }
 
@@ -105,17 +94,17 @@ func WithAppendReadWriter(rw logstore.ReadWriter) func(engine *Engine) {
 	}
 }
 
-func NewAOFEngine(options ...func(engine *Engine)) (*Engine, error) {
+func NewAOFEngine(ctx context.Context, options ...func(engine *Engine)) (*Engine, error) {
 	engine := &Engine{
-		clock:             clock.NewClock(),
-		syncStrategy:      "everysec",
-		directory:         "",
-		mut:               sync.Mutex{},
-		logCount:          0,
-		startRewriteFunc:  func() {},
-		finishRewriteFunc: func() {},
-		setKeyDataFunc:    func(database int, key string, data internal.KeyData) {},
-		handleCommand:     func(database int, command []byte) {},
+		store:          map[int]map[string]internal.KeyData{},
+		storeLock:      &sync.RWMutex{},
+		clock:          clock.NewClock(),
+		syncStrategy:   "everysec",
+		directory:      "",
+		mut:            sync.Mutex{},
+		logCount:       0,
+		setKeyDataFunc: func(database int, key string, data internal.KeyData) {},
+		handleCommand:  func(database int, command []byte) {},
 	}
 
 	// Setup AOFEngine options first as these options are used
@@ -139,6 +128,7 @@ func NewAOFEngine(options ...func(engine *Engine)) (*Engine, error) {
 
 	// Setup AOF log store engine
 	appendStore, err := logstore.NewAppendStore(
+		ctx,
 		logstore.WithClock(engine.clock),
 		logstore.WithDirectory(engine.directory),
 		logstore.WithStrategy(engine.syncStrategy),
@@ -163,8 +153,8 @@ func (engine *Engine) RewriteLog() error {
 	engine.mut.Lock()
 	defer engine.mut.Unlock()
 
-	engine.startRewriteFunc()
-	defer engine.finishRewriteFunc()
+	engine.storeLock.RLock()
+	defer engine.storeLock.RUnlock()
 
 	// Create AOF preamble.
 	if err := engine.preambleStore.CreatePreamble(); err != nil {
@@ -192,8 +182,5 @@ func (engine *Engine) Restore() error {
 func (engine *Engine) Close() {
 	if err := engine.preambleStore.Close(); err != nil {
 		log.Printf("close preamble store error: %+v\n", engine)
-	}
-	if err := engine.appendStore.Close(); err != nil {
-		log.Printf("close append store error: %+v\n", engine)
 	}
 }

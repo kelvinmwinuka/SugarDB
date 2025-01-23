@@ -15,6 +15,7 @@
 package log
 
 import (
+	"context"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/clock"
@@ -82,7 +83,7 @@ func WithHandleCommandFunc(f func(database int, command []byte)) func(store *Sto
 	}
 }
 
-func NewAppendStore(options ...func(store *Store)) (*Store, error) {
+func NewAppendStore(ctx context.Context, options ...func(store *Store)) (*Store, error) {
 	store := &Store{
 		clock:           clock.NewClock(),
 		currentDatabase: -1,
@@ -116,18 +117,24 @@ func NewAppendStore(options ...func(store *Store)) (*Store, error) {
 	if strings.EqualFold(store.strategy, "everysec") {
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
-			defer func() {
-				ticker.Stop()
-			}()
+			defer ticker.Stop()
 			for {
-				store.mut.Lock()
-				if err := store.Sync(); err != nil {
+				select {
+				case <-ctx.Done():
+					log.Println("closing append store routine...")
+					if err := store.close(); err != nil {
+						log.Printf("error closing append store routine: %+v\n", err)
+					}
+					return
+				case <-ticker.C:
+					store.mut.Lock()
+					if err := store.Sync(); err != nil {
+						store.mut.Unlock()
+						log.Println(fmt.Errorf("new append store error: %+v", err))
+						break
+					}
 					store.mut.Unlock()
-					log.Println(fmt.Errorf("new append store error: %+v", err))
-					break
 				}
-				store.mut.Unlock()
-				<-ticker.C
 			}
 		}()
 	}
@@ -250,7 +257,7 @@ func (store *Store) Truncate() error {
 	return nil
 }
 
-func (store *Store) Close() error {
+func (store *Store) close() error {
 	store.mut.Lock()
 	defer store.mut.Unlock()
 	if store.rw == nil {

@@ -16,6 +16,7 @@ package log_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"github.com/echovault/sugardb/internal/aof/log"
 	"github.com/echovault/sugardb/internal/clock"
@@ -93,57 +94,57 @@ func Test_AppendStore(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		done := make(chan struct{}, 1)
+		t.Run(test.name, func(t *testing.T) {
+			done := make(chan struct{}, 1)
 
-		options := []func(store *log.Store){
-			log.WithClock(clock.NewClock()),
-			log.WithDirectory(test.directory),
-			log.WithStrategy(test.strategy),
-			log.WithHandleCommandFunc(func(database int, command []byte) {
-				for _, c := range test.commands {
-					if bytes.Contains(command, marshalRespCommand(c)) {
-						return
+			options := []func(store *log.Store){
+				log.WithClock(clock.NewClock()),
+				log.WithDirectory(test.directory),
+				log.WithStrategy(test.strategy),
+				log.WithHandleCommandFunc(func(database int, command []byte) {
+					for _, c := range test.commands {
+						if bytes.Contains(command, marshalRespCommand(c)) {
+							return
+						}
 					}
-				}
-				t.Errorf("could not find command in commands list:\n%s", string(command))
-			}),
-		}
-		if test.appendReadWriter != nil {
-			options = append(options, log.WithReadWriter(test.appendReadWriter))
-		}
-
-		go func() {
-			store, err := log.NewAppendStore(options...)
-			if err != nil {
-				t.Error(err)
+					t.Errorf("could not find command in commands list:\n%s", string(command))
+				}),
+			}
+			if test.appendReadWriter != nil {
+				options = append(options, log.WithReadWriter(test.appendReadWriter))
 			}
 
-			for _, command := range test.commands {
-				b := marshalRespCommand(command)
-				if err = store.Write(0, b); err != nil {
+			go func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				store, err := log.NewAppendStore(ctx, options...)
+				if err != nil {
 					t.Error(err)
 				}
+
+				for _, command := range test.commands {
+					b := marshalRespCommand(command)
+					if err = store.Write(0, b); err != nil {
+						t.Error(err)
+					}
+				}
+
+				// Restore from AOF file
+				if err = store.Restore(); err != nil {
+					t.Error(err)
+				}
+
+				cancel()
+
+				done <- struct{}{}
+			}()
+
+			ticker := time.NewTicker(200 * time.Millisecond)
+
+			select {
+			case <-done:
+			case <-ticker.C:
+				t.Error("timeout error")
 			}
-
-			// Restore from AOF file
-			if err = store.Restore(); err != nil {
-				t.Error(err)
-			}
-
-			if err = store.Close(); err != nil {
-				t.Error(err)
-			}
-
-			done <- struct{}{}
-		}()
-
-		ticker := time.NewTicker(200 * time.Millisecond)
-
-		select {
-		case <-done:
-		case <-ticker.C:
-			t.Error("timeout error")
-		}
+		})
 	}
-
 }

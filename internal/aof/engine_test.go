@@ -15,6 +15,7 @@
 package aof_test
 
 import (
+	"context"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/aof"
@@ -22,7 +23,7 @@ import (
 	"github.com/echovault/sugardb/internal/aof/preamble"
 	"github.com/echovault/sugardb/internal/clock"
 	"os"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
@@ -40,20 +41,7 @@ func Test_AOFEngine(t *testing.T) {
 	strategy := "always"
 	directory := "./testdata"
 
-	var rewriteInProgress atomic.Bool
-	startRewriteFunc := func() {
-		if rewriteInProgress.Load() {
-			t.Error("expected rewriteInProgress to be false, got true")
-		}
-		rewriteInProgress.Store(true)
-	}
-	finishRewriteFunc := func() {
-		if !rewriteInProgress.Load() {
-			t.Error("expected rewriteInProgress to be true, got false")
-			rewriteInProgress.Store(false)
-		}
-	}
-
+	stateLock := &sync.RWMutex{}
 	state := map[int]map[string]internal.KeyData{
 		0: {
 			"key1": {Value: "value-01", ExpireAt: clock.NewClock().Now().Add(10 * time.Second)},
@@ -92,10 +80,6 @@ func Test_AOFEngine(t *testing.T) {
 		},
 	}
 
-	getStateFunc := func() map[int]map[string]internal.KeyData {
-		return state
-	}
-
 	setKeyDataFunc := func(database int, key string, data internal.KeyData) {
 		if restoredState[database] == nil {
 			restoredState[database] = make(map[string]internal.KeyData)
@@ -119,12 +103,11 @@ func Test_AOFEngine(t *testing.T) {
 	}()
 
 	engine, err := aof.NewAOFEngine(
+		context.Background(),
+		aof.WithStore(state, stateLock),
 		aof.WithClock(clock.NewClock()),
 		aof.WithStrategy(strategy),
 		aof.WithDirectory(directory),
-		aof.WithStartRewriteFunc(startRewriteFunc),
-		aof.WithFinishRewriteFunc(finishRewriteFunc),
-		aof.WithGetStateFunc(getStateFunc),
 		aof.WithSetKeyDataFunc(setKeyDataFunc),
 		aof.WithHandleCommandFunc(handleCommandFunc),
 		aof.WithPreambleReadWriter(preambleReadWriter),
@@ -156,10 +139,7 @@ func Test_AOFEngine(t *testing.T) {
 	}
 
 	ticker := time.NewTicker(100 * time.Millisecond)
-	defer func() {
-		ticker.Stop()
-	}()
-
+	defer ticker.Stop()
 	<-ticker.C
 
 	// Trigger log rewrite

@@ -136,9 +136,6 @@ func Test_PreambleStore(t *testing.T) {
 		options := []func(store *preamble.Store){
 			preamble.WithClock(clock.NewClock()),
 			preamble.WithDirectory(test.directory),
-			preamble.WithGetStateFunc(func() map[int]map[string]internal.KeyData {
-				return test.state
-			}),
 			preamble.WithSetKeyDataFunc(func(database int, key string, data internal.KeyData) {
 				entry, ok := test.wantState[database][key]
 				if !ok {
