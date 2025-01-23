@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
+	"github.com/echovault/sugardb/internal/events"
 	"slices"
 	"strings"
 )
@@ -194,13 +195,16 @@ func (server *SugarDB) LastSave() (int, error) {
 	return internal.ParseIntegerResponse(b)
 }
 
-// RewriteAOF triggers a compaction of the AOF file.
-func (server *SugarDB) RewriteAOF() (string, error) {
-	b, err := server.handleCommand(server.context, internal.EncodeCommand([]string{"REWRITEAOF"}), nil, false, true)
-	if err != nil {
-		return "", err
-	}
-	return internal.ParseStringResponse(b)
+// RewriteAOF queues a high-priority event that triggers a compaction of the log file.
+func (server *SugarDB) RewriteAOF() {
+	server.eventQueue.Enqueue(events.Event{
+		Kind:     events.EVENT_KIND_REWEIRE_AOF,
+		Priority: events.EVENT_PRIORITY_HIGH,
+		Time:     server.clock.Now(),
+		Handler: func() error {
+			return server.aofEngine.RewriteLog()
+		},
+	})
 }
 
 // AddCommand adds a new command to SugarDB. The added command can be executed using the ExecuteCommand method.

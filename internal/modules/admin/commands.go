@@ -310,9 +310,7 @@ Get the list of command names. Allows for filtering by ACL category or glob patt
 				}, nil
 			},
 			HandlerFunc: func(params internal.HandlerFuncParams) ([]byte, error) {
-				if err := params.RewriteAOF(); err != nil {
-					return nil, err
-				}
+				params.RewriteAOF()
 				return []byte(constants.OkResponse), nil
 			},
 		},

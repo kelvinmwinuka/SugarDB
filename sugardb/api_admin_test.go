@@ -54,7 +54,7 @@ func TestSugarDB_AddCommand(t *testing.T) {
 				command: CommandOptions{
 					Command: "CommandOne",
 					Module:  "test-module",
-					Description: `(CommandOne write-key read-key <value>) 
+					Description: `(CommandOne write-key read-key <value>)
 Test command to handle successful addition of a single command without subcommands.
 The value passed must be an integer.`,
 					Categories: []string{},
@@ -118,7 +118,7 @@ The value passed must be an integer.`,
 						{
 							Command: "SubCommandOne",
 							Module:  "test-module",
-							Description: `(CommandTwo SubCommandOne write-key read-key <value>) 
+							Description: `(CommandTwo SubCommandOne write-key read-key <value>)
 Test command to handle successful addition of a single command with subcommands.
 The value passed must be an integer.`,
 							Categories: []string{},
