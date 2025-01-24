@@ -21,6 +21,7 @@ var (
 	EVENT_KIND_UPDATE_CONFIG        = EventKind("update-config")
 	EVENT_KIND_REWEIRE_AOF          = EventKind("rewrite-aof")
 	EVENT_KIND_TTL_EVICTION         = EventKind("ttl-eviction")
+	EVENT_KIND_ADJUST_MEM           = EventKind("adjust-memory")
 )
 
 type Event struct {

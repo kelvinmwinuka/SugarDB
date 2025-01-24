@@ -91,51 +91,9 @@ func NewEventQueue(ctx context.Context) *EventQueue {
 
 				// log.Printf("processing event: %#+v\n", e)
 
-				switch e.Kind {
-
-				default:
-					log.Printf("could not process event: %#+v\n", e)
-
-				case EVENT_KIND_COMMAND:
-					// Handle command event
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on command event: %+v", err, e)
-					}
-
-				case EVENT_KIND_DELETE_KEY:
-					// Handle delete key event
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on delete keys event: %+v", err, e)
-					}
-
-				case EVENT_KIND_UPDATE_KEYS_IN_CACHE:
-					// Handle events to update key status in caches (lfu, lru)
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on update keys in cache event: %+v", err, e)
-					}
-
-				case EVENT_KIND_SNAPSHOT:
-					// Handle snapshot event
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on snapshot event: %+v", err, e)
-					}
-
-				case EVENT_KIND_UPDATE_CONFIG:
-					// Handle config update event
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on update config event: %+v", err, e)
-					}
-
-				case EVENT_KIND_REWEIRE_AOF:
-					// Handle rewrite aof event
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on rewrite aof event: %+v", err, e)
-					}
-
-				case EVENT_KIND_TTL_EVICTION:
-					if err := e.Handler(); err != nil {
-						log.Printf("error %+v on ttl eviction event: %+v", err, e)
-					}
+				// Invoke event handler
+				if err := e.Handler(); err != nil {
+					log.Printf("error %+v on %s event: %+v", e.Kind, err, e)
 				}
 			}
 		}
