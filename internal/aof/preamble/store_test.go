@@ -15,6 +15,7 @@
 package preamble_test
 
 import (
+	"context"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/aof/preamble"
 	"github.com/echovault/sugardb/internal/clock"
@@ -26,6 +27,13 @@ import (
 
 func Test_PreambleStore(t *testing.T) {
 	directory := "./testdata/preamble"
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	t.Cleanup(func() {
+		cancelFunc()
+		_ = os.RemoveAll("./testdata")
+	})
+
 	tests := []struct {
 		name               string
 		directory          string
@@ -150,7 +158,7 @@ func Test_PreambleStore(t *testing.T) {
 			}),
 		}
 
-		store, err := preamble.NewPreambleStore(options...)
+		store, err := preamble.NewPreambleStore(ctx, options...)
 		if err != nil {
 			t.Error(err)
 		}
@@ -164,5 +172,4 @@ func Test_PreambleStore(t *testing.T) {
 		}
 	}
 
-	_ = os.RemoveAll("./testdata")
 }

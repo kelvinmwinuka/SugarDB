@@ -121,7 +121,7 @@ func NewAppendStore(ctx context.Context, options ...func(store *Store)) (*Store,
 			for {
 				select {
 				case <-ctx.Done():
-					log.Println("closing append store routine...")
+					log.Println("closing append store...")
 					if err := store.close(); err != nil {
 						log.Printf("error closing append store routine: %+v\n", err)
 					}

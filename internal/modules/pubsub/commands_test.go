@@ -154,7 +154,6 @@ func Test_PubSub(t *testing.T) {
 			command = append(command, resp.StringValue(pattern))
 		}
 		for _, conn := range connections {
-			// fmt.Println("subscribing connection using PSUBSCRIBE: ", conn)
 			if err := conn.WriteArray(command); err != nil {
 				t.Error(err)
 				return

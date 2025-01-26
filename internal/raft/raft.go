@@ -49,13 +49,14 @@ type Raft struct {
 	raft    *raft.Raft
 }
 
-func NewRaft(opts Opts) *Raft {
-	return &Raft{
+func NewRaft(ctx context.Context, opts Opts) *Raft {
+	r := &Raft{
 		options: opts,
 	}
+	return r
 }
 
-func (r *Raft) RaftInit(ctx context.Context) {
+func (r *Raft) RaftInit() {
 	conf := r.options.Config
 
 	raftConfig := raft.DefaultConfig()
@@ -122,6 +123,7 @@ func (r *Raft) RaftInit(ctx context.Context) {
 			DeleteKeys:            r.options.DeleteKeys,
 			SetLatestSnapshotTime: r.options.SetLatestSnapshotTime,
 			GetHandlerFuncParams:  r.options.GetHandlerFuncParams,
+			IsRaftLeader:          r.IsRaftLeader,
 		}),
 		logStore,
 		stableStore,

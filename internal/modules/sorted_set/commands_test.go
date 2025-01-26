@@ -16,18 +16,17 @@ package sorted_set_test
 
 import (
 	"errors"
-	"math"
-	"slices"
-	"strconv"
-	"strings"
-	"testing"
-
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/config"
 	"github.com/echovault/sugardb/internal/constants"
 	"github.com/echovault/sugardb/internal/modules/sorted_set"
 	"github.com/echovault/sugardb/sugardb"
 	"github.com/tidwall/resp"
+	"math"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
 )
 
 func Test_SortedSet(t *testing.T) {

@@ -17,12 +17,6 @@ package hash_test
 import (
 	"errors"
 	"fmt"
-	"slices"
-	"strconv"
-	"strings"
-	"testing"
-	"time"
-
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/clock"
 	"github.com/echovault/sugardb/internal/config"
@@ -30,6 +24,11 @@ import (
 	"github.com/echovault/sugardb/internal/modules/hash"
 	"github.com/echovault/sugardb/sugardb"
 	"github.com/tidwall/resp"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
 )
 
 func Test_Hash(t *testing.T) {
@@ -2470,21 +2469,21 @@ func Test_Hash(t *testing.T) {
 				if err = client.WriteArray(command); err != nil {
 					t.Error(err)
 				}
-				resp, _, err := client.ReadValue()
+				res, _, err := client.ReadValue()
 				if err != nil {
 					t.Error(err)
 				}
 
 				if test.expectedError != nil {
-					if !strings.Contains(resp.Error().Error(), test.expectedError.Error()) {
-						t.Errorf("expected error \"%s\", got \"%s\"", test.expectedError.Error(), resp.Error())
+					if !strings.Contains(res.Error().Error(), test.expectedError.Error()) {
+						t.Errorf("expected error \"%s\", got \"%s\"", test.expectedError.Error(), res.Error())
 					}
 
 					return
 				}
 
-				if resp.String() != test.expectedValue {
-					t.Errorf("Expected value %v but got %v", test.expectedValue, resp)
+				if res.String() != test.expectedValue {
+					t.Errorf("Expected value %v but got %v", test.expectedValue, res)
 				}
 
 			})

@@ -40,6 +40,12 @@ func marshalRespCommand(command []string) []byte {
 func Test_AOFEngine(t *testing.T) {
 	strategy := "always"
 	directory := "./testdata"
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	t.Cleanup(func() {
+		cancelFunc()
+		_ = os.RemoveAll(directory)
+	})
 
 	stateLock := &sync.RWMutex{}
 	state := map[int]map[string]internal.KeyData{
@@ -103,7 +109,7 @@ func Test_AOFEngine(t *testing.T) {
 	}()
 
 	engine, err := aof.NewAOFEngine(
-		context.Background(),
+		ctx,
 		aof.WithStore(state, stateLock),
 		aof.WithClock(clock.NewClock()),
 		aof.WithStrategy(strategy),
@@ -195,7 +201,4 @@ func Test_AOFEngine(t *testing.T) {
 			}
 		}
 	}
-
-	engine.Close()
-	_ = os.RemoveAll(directory)
 }

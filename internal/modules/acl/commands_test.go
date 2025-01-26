@@ -1868,11 +1868,6 @@ func Test_ACL(t *testing.T) {
 					return
 				}
 
-				fmt.Println("USER LIST: ")
-				for j, user := range resArr {
-					fmt.Printf("%d) %+v\n", j, user)
-				}
-
 				var resStr []string
 				for i := 0; i < len(resArr); i++ {
 					resStr = strings.Split(resArr[i].String(), " ")

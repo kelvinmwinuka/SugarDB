@@ -57,25 +57,32 @@ func (h *eventHeap) Push(e any) {
 
 type EventQueue struct {
 	eventHeap eventHeap
-	mux       sync.Mutex
+	mux       *sync.Mutex
+	cond      *sync.Cond
 }
 
 func (queue *EventQueue) Enqueue(e Event) {
 	queue.mux.Lock()
 	defer queue.mux.Unlock()
 	heap.Push(&queue.eventHeap, e)
-	// TODO: Uncomment this
-	// log.Printf("event queued: %#+v\n", e)
+	queue.cond.Signal()
 }
 
-func (queue *EventQueue) dequeue() any {
+func (queue *EventQueue) dequeue(batchSize int) []Event {
 	queue.mux.Lock()
 	defer queue.mux.Unlock()
-	if queue.len() == 0 {
-		return nil
+
+	for queue.len() < batchSize {
+		queue.cond.Wait()
 	}
-	e := heap.Pop(&queue.eventHeap).(Event)
-	return e
+
+	var events []Event
+	for i := 0; i < batchSize && queue.len() > 0; i++ {
+		e := heap.Pop(&queue.eventHeap).(Event)
+		events = append(events, e)
+	}
+
+	return events
 }
 
 func (queue *EventQueue) len() int {
@@ -85,32 +92,35 @@ func (queue *EventQueue) len() int {
 func NewEventQueue(ctx context.Context) *EventQueue {
 	queue := &EventQueue{
 		eventHeap: make(eventHeap, 0),
-		mux:       sync.Mutex{},
+		mux:       &sync.Mutex{},
 	}
+	queue.cond = sync.NewCond(queue.mux)
 
 	heap.Init(&queue.eventHeap)
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				log.Println("closing event loop...")
-				return
-			default:
-				event := queue.dequeue()
-				if event == nil {
-					continue
-				}
-				e := event.(Event)
+	numOfWorkers := 10
 
-				// log.Printf("processing event: %#+v\n", e)
-
-				// Invoke event handler
-				if err := e.Handler(); err != nil {
-					log.Printf("error %+v on %s event: %+v", e.Kind, err, e)
+	for i := 0; i < numOfWorkers; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					log.Println("closing event loop...")
+					return
+				default:
+					events := queue.dequeue(1)
+					for _, event := range events {
+						go func(e Event) {
+							// Invoke event handler
+							if err := e.Handler(); err != nil {
+								log.Printf("error %+v on %s event: %+v", e.Kind, err, e)
+							}
+						}(event)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
+
 	return queue
 }

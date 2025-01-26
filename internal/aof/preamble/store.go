@@ -15,11 +15,13 @@
 package preamble
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/echovault/sugardb/internal"
 	"github.com/echovault/sugardb/internal/clock"
 	"io"
+	"log"
 	"os"
 	"path"
 	"sync"
@@ -71,7 +73,7 @@ func WithDirectory(directory string) func(store *Store) {
 	}
 }
 
-func NewPreambleStore(options ...func(store *Store)) (*Store, error) {
+func NewPreambleStore(ctx context.Context, options ...func(store *Store)) (*Store, error) {
 	store := &Store{
 		clock:          clock.NewClock(),
 		rw:             nil,
@@ -96,6 +98,14 @@ func NewPreambleStore(options ...func(store *Store)) (*Store, error) {
 		}
 		store.rw = f
 	}
+
+	go func() {
+		<-ctx.Done()
+		log.Println("closing preamble store...")
+		if err := store.close(); err != nil {
+			log.Printf("close preamble store error: %+v\n", err)
+		}
+	}()
 
 	return store, nil
 }
@@ -165,7 +175,7 @@ func (store *Store) Restore() error {
 	return nil
 }
 
-func (store *Store) Close() error {
+func (store *Store) close() error {
 	store.mut.Lock()
 	defer store.mut.Unlock()
 	if store.rw == nil {

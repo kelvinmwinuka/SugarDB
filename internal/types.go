@@ -170,7 +170,7 @@ type HandlerFuncParams struct {
 	// TakeSnapshot triggers a snapshot by the SugarDB instance.
 	TakeSnapshot func()
 	// RewriteAOF triggers a compaction of the commands logs by the SugarDB instance.
-	RewriteAOF func() error
+	RewriteAOF func()
 	// GetLatestSnapshotTime returns the latest snapshot timestamp.
 	GetLatestSnapshotTime func() int64
 	// LoadModule loads the provided module with the given args passed to the module's

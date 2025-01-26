@@ -426,7 +426,6 @@ func handleIncr(params internal.HandlerFuncParams) ([]byte, error) {
 		case int64:
 			currentValueInt = v // Use int64 value directly
 		default:
-			fmt.Printf("unexpected type for currentValue: %T\n", currentValue)
 			return nil, errors.New("unexpected type for currentValue") // Handle unexpected types
 		}
 		newValue = currentValueInt + 1 // Increment the value
@@ -473,7 +472,6 @@ func handleDecr(params internal.HandlerFuncParams) ([]byte, error) {
 		case int64:
 			currentValueInt = v // Use int64 value directly
 		default:
-			fmt.Printf("unexpected type for currentValue: %T\n", currentValue)
 			return nil, errors.New("unexpected type for currentValue") // Handle unexpected types
 		}
 		newValue = currentValueInt - 1 // Decrement the value

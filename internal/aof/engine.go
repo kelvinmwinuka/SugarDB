@@ -115,6 +115,7 @@ func NewAOFEngine(ctx context.Context, options ...func(engine *Engine)) (*Engine
 
 	// Setup Preamble engine
 	preambleStore, err := preamble.NewPreambleStore(
+		ctx,
 		preamble.WithClock(engine.clock),
 		preamble.WithDirectory(engine.directory),
 		preamble.WithReadWriter(engine.preambleRW),
@@ -177,10 +178,4 @@ func (engine *Engine) Restore() error {
 		return fmt.Errorf("restore aof error: restore aof error: %+v", err)
 	}
 	return nil
-}
-
-func (engine *Engine) Close() {
-	if err := engine.preambleStore.Close(); err != nil {
-		log.Printf("close preamble store error: %+v\n", engine)
-	}
 }

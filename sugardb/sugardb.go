@@ -46,6 +46,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,21 +210,19 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 	sugarDB.pubSub = pubsub.NewPubSub(sugarDB.context)
 
 	if sugarDB.isInCluster() {
-		sugarDB.raft = raft.NewRaft(raft.Opts{
-			Store:                 &sugarDB.store,
-			StoreLock:             sugarDB.storeLock,
-			Config:                sugarDB.config,
-			GetCommand:            sugarDB.getCommand,
-			SetValues:             sugarDB.setValues,
-			SetExpiry:             sugarDB.setExpiry,
-			SetLatestSnapshotTime: sugarDB.setLatestSnapshot,
-			GetHandlerFuncParams:  sugarDB.getHandlerFuncParams,
-			DeleteKeys: func(ctx context.Context, keys []string) error {
-				sugarDB.storeLock.Lock()
-				defer sugarDB.storeLock.Unlock()
-				return sugarDB.deleteKeys(ctx, keys)
-			},
-		})
+		sugarDB.raft = raft.NewRaft(
+			sugarDB.context,
+			raft.Opts{
+				Store:                 &sugarDB.store,
+				StoreLock:             sugarDB.storeLock,
+				Config:                sugarDB.config,
+				GetCommand:            sugarDB.getCommand,
+				SetExpiry:             sugarDB.setExpiry,
+				SetLatestSnapshotTime: sugarDB.setLatestSnapshot,
+				GetHandlerFuncParams:  sugarDB.getHandlerFuncParams,
+				SetValues:             sugarDB.setValues,
+				DeleteKeys:            sugarDB.deleteKeys,
+			})
 		sugarDB.memberList = memberlist.NewMemberList(memberlist.Opts{
 			Config:           sugarDB.config,
 			HasJoinedCluster: sugarDB.raft.HasJoinedCluster,
@@ -291,10 +290,13 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 		go func() {
 			ticker := time.NewTicker(sugarDB.config.EvictionInterval)
 			defer ticker.Stop()
+
+			currentDB := 0 // The current database to evict expired keys from
+
 			for {
 				select {
 				case <-sugarDB.context.Done():
-					log.Println("stopping ttl goroutine...")
+					log.Println("shutting down ttl eviction routine...")
 					return
 				case <-ticker.C:
 					// Emit event for key eviction in databases that have volatile keys.
@@ -306,33 +308,32 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 							sugarDB.storeLock.Lock()
 							defer sugarDB.storeLock.Unlock()
 
-							errs := make(map[int]error)
-							errMut := sync.Mutex{}
+							// Otherwise, carry out the eviction.
+							ctx := context.WithValue(context.Background(), "Database", currentDB)
+							err := sugarDB.evictKeysWithExpiredTTL(ctx)
 
-							wg := sync.WaitGroup{}
-							for db, _ := range sugarDB.keysWithExpiry.keys {
-								wg.Add(1)
-								go func(database int, wg *sync.WaitGroup) {
-									ctx := context.WithValue(context.Background(), "Database", database)
-									if err := sugarDB.evictKeysWithExpiredTTL(ctx); err != nil {
-										errMut.Lock()
-										errs[database] = err
-										errMut.Unlock()
-									}
-									wg.Done()
-								}(db, &wg)
-							}
-							wg.Wait()
+							sugarDB.keysWithExpiry.rwMutex.RLock()
+							defer sugarDB.keysWithExpiry.rwMutex.RUnlock()
 
-							// Construct composite error from the errors returned from each database, if any.
-							errStr := ""
-							for _, err := range errs {
-								errStr += fmt.Sprintf(", %s", err.Error())
+							// Get the list of dbs and sort in ascending order.
+							var dbs []int
+							for db := range sugarDB.keysWithExpiry.keys {
+								dbs = append(dbs, db)
 							}
-							if len(errStr) > 0 {
-								return errors.New(errStr)
+							sort.Slice(dbs, func(i, j int) bool {
+								return dbs[i] < dbs[j]
+							})
+
+							// Pick the next database.
+							idx := slices.Index(dbs, currentDB)
+							if idx < len(dbs)-1 {
+								currentDB = dbs[idx+1]
+							} else if idx >= len(dbs)-1 {
+								// If the current db is the last one, set database 0 as the current one.
+								currentDB = 0
 							}
-							return nil
+
+							return err
 						},
 					})
 				}
@@ -344,17 +345,16 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 		return nil, errors.New("must provide certificate and key file paths for TLS mode")
 	}
 
+	// Initialise caches
+	sugarDB.initialiseCaches()
+
 	if sugarDB.isInCluster() {
 		// Initialise raft and memberlist
-		sugarDB.raft.RaftInit(sugarDB.context)
+		sugarDB.raft.RaftInit()
 		sugarDB.memberList.MemberListInit(sugarDB.context)
-		// Initialise caches
-		sugarDB.initialiseCaches()
 	}
 
 	if !sugarDB.isInCluster() {
-		sugarDB.initialiseCaches()
-		// Restore from AOF by default if it's enabled
 		if sugarDB.config.RestoreAOF {
 			err := sugarDB.aofEngine.Restore()
 			if err != nil {

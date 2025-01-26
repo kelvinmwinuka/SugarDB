@@ -39,6 +39,7 @@ type FSMOpts struct {
 	DeleteKeys            func(ctx context.Context, keys []string) error
 	SetLatestSnapshotTime func(msec int64)
 	GetHandlerFuncParams  func(ctx context.Context, cmd []string, conn *net.Conn) internal.HandlerFuncParams
+	IsRaftLeader          func() bool
 }
 
 type FSM struct {
@@ -57,6 +58,13 @@ func (fsm *FSM) Apply(log *raft.Log) interface{} {
 	default:
 		// No-Op
 	case raft.LogCommand:
+		// Only lock the store if the current node running Apply is not a leader node.
+		// The leader node would have already locked the store before triggering apply.
+		if !fsm.options.IsRaftLeader() {
+			fsm.options.StoreLock.Lock()
+			defer fsm.options.StoreLock.Unlock()
+		}
+
 		var request internal.ApplyRequest
 
 		if err := json.Unmarshal(log.Data, &request); err != nil {
@@ -161,6 +169,8 @@ func (fsm *FSM) Restore(snapshot io.ReadCloser) error {
 	}
 
 	// Set state
+	fsm.options.StoreLock.Lock()
+	defer fsm.options.StoreLock.Unlock()
 	for database, data := range internal.FilterExpiredKeys(time.Now(), data.State) {
 		ctx := context.WithValue(context.Background(), "Database", database)
 		for key, keyData := range data {

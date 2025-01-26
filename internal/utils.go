@@ -453,9 +453,7 @@ func GetConnection(addr string, port int) (net.Conn, error) {
 	}()
 
 	ticker := time.NewTicker(10 * time.Second)
-	defer func() {
-		ticker.Stop()
-	}()
+	defer ticker.Stop()
 
 	select {
 	case <-ticker.C:
@@ -483,9 +481,7 @@ func GetTLSConnection(addr string, port int, config *tls.Config) (net.Conn, erro
 	}()
 
 	ticker := time.NewTicker(10 * time.Second)
-	defer func() {
-		ticker.Stop()
-	}()
+	defer ticker.Stop()
 
 	select {
 	case <-ticker.C:

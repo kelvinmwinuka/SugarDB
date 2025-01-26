@@ -99,7 +99,6 @@ func (delegate *Delegate) NotifyMsg(msgBytes []byte) {
 		if err := json.Unmarshal(msg.Content, &keys); err != nil {
 			log.Printf("could not unmarshal delete keys list: %+v\n", err)
 		}
-		fmt.Println("KEYS: ", keys)
 
 		if err := delegate.options.applyDeleteKeys(ctx, keys); err != nil {
 			log.Println(err)

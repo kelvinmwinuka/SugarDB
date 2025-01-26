@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,7 +26,7 @@ type Metrics struct {
 func getCommandArgs() (string, bool) {
 	defaultCommands := "ping,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,zpopmin,lrange,mset"
 	commands := flag.String("commands", defaultCommands, "Commands to run")
-	useLocal := flag.Bool("use_local_server", false, "Run benchamark using local SugarDB server")
+	useLocal := flag.Bool("use_local_server", false, "Run benchmark using local SugarDB server")
 	flag.Parse()
 	fmt.Printf("Provided commands: %s\n", *commands)
 	if *useLocal {
@@ -99,7 +100,10 @@ func main() {
 	commands, useLocal := getCommandArgs()
 
 	// Start a local Redis server, wait a few seconds for it to start
-	exec.Command("redis-server", "--port", RedisPort).Start()
+	err := exec.Command("redis-server", "--port", RedisPort).Start()
+	if err != nil {
+		log.Fatalf("failed to start redis server: %+v\n", err)
+	}
 	time.Sleep(2 * time.Second)
 
 	// Run benchmark on local Redis server
@@ -112,7 +116,10 @@ func main() {
 
 	if !useLocal {
 		// Run the packaged SugarDB server, wait a few seconds for it to start
-		exec.Command("echovault", "--bind-addr=localhost", "--data-dir=persistence").Start()
+		err := exec.Command("sugardb", "--bind-addr=localhost", "--data-dir=persistence").Start()
+		if err != nil {
+			log.Fatalf("failed to start sugardb server: %+v\n", err)
+		}
 		time.Sleep(5 * time.Second)
 	}
 

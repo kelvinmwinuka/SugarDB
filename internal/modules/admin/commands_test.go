@@ -764,9 +764,10 @@ func Test_AdminCommands(t *testing.T) {
 		})
 
 		tests := []struct {
-			name         string
-			dataDir      string
-			values       map[string]string
+			name    string
+			dataDir string
+			values  map[string]string
+
 			snapshotFunc func(mockServer *sugardb.SugarDB, port int) error
 			lastSaveFunc func(mockServer *sugardb.SugarDB, port int) (int, error)
 			wantLastSave int
@@ -867,7 +868,7 @@ func Test_AdminCommands(t *testing.T) {
 				}
 
 				// Yield to allow snapshot to complete sync.
-				ticker := time.NewTicker(200 * time.Millisecond)
+				ticker := time.NewTicker(350 * time.Millisecond)
 				<-ticker.C
 				ticker.Stop()
 

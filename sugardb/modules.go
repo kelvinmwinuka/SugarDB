@@ -51,7 +51,7 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 		SetHashExpiry:         server.setHashExpiry,
 		TakeSnapshot:          server.takeSnapshot,
 		GetLatestSnapshotTime: server.getLatestSnapshotTime,
-		RewriteAOF:            server.rewriteAOF,
+		RewriteAOF:            server.RewriteAOF,
 		LoadModule:            server.LoadModule,
 		UnloadModule:          server.UnloadModule,
 		ListModules:           server.ListModules,
@@ -101,7 +101,14 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 	}
 }
 
-func (server *SugarDB) handleCommand(ctx context.Context, message []byte, conn *net.Conn, replay bool, embedded bool) ([]byte, error) {
+func (server *SugarDB) handleCommand(
+	ctx context.Context,
+	message []byte,
+	conn *net.Conn,
+	replay bool,
+	embedded bool,
+) ([]byte, error) {
+	// Lock the store for sync between embedded calls and event loop.
 	server.storeLock.Lock()
 	defer server.storeLock.Unlock()
 
@@ -113,7 +120,7 @@ func (server *SugarDB) handleCommand(ctx context.Context, message []byte, conn *
 		ctx = context.WithValue(ctx, "ConnectionName", server.connInfo.embedded.Name)
 		ctx = context.WithValue(ctx, "Protocol", server.connInfo.embedded.Protocol)
 		ctx = context.WithValue(ctx, "Database", server.connInfo.embedded.Database)
-	} else {
+	} else if !replay {
 		// The call is triggered by a TCP connection.
 		// Add TCP connection info to the context of the request.
 		ctx = context.WithValue(ctx, "ConnectionName", server.connInfo.tcpClients[conn].Name)

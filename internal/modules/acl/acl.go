@@ -76,14 +76,14 @@ func loadUsersFromConfigFile(filePath string) []*User {
 
 		if strings.ToLower(ext) == ".json" {
 			if err := json.NewDecoder(f).Decode(&users); err != nil {
-				log.Printf("load ACL config: %v\n", err)
+				log.Printf("load ACL config from %s: %v\n", filePath, err)
 				return users
 			}
 		}
 
 		if slices.Contains([]string{".yaml", ".yml"}, strings.ToLower(ext)) {
 			if err := yaml.NewDecoder(f).Decode(&users); err != nil {
-				log.Printf("load ACL config: %v\n", err)
+				log.Printf("load ACL config from %s: %v\n", filePath, err)
 				return users
 			}
 		}
