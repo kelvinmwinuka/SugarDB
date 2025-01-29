@@ -26,7 +26,7 @@ func (server *SugarDB) isInCluster() bool {
 	return server.config.BootstrapCluster || server.config.JoinAddr != ""
 }
 
-func (server *SugarDB) raftApplyDeleteKey(ctx context.Context, key string) error {
+func (server *SugarDB) raftApplyDeleteKeys(ctx context.Context, keys []string) error {
 	serverId, _ := ctx.Value(internal.ContextServerID("ServerID")).(string)
 	protocol, _ := ctx.Value("Protocol").(int)
 	database, _ := ctx.Value("Database").(int)
@@ -37,12 +37,12 @@ func (server *SugarDB) raftApplyDeleteKey(ctx context.Context, key string) error
 		ConnectionID: "nil",
 		Protocol:     protocol,
 		Database:     database,
-		Key:          key,
+		Keys:         keys,
 	}
 
 	b, err := json.Marshal(deleteKeyRequest)
 	if err != nil {
-		return fmt.Errorf("could not parse delete key request for key: %s", key)
+		return fmt.Errorf("could not parse delete keys request for keys: %+v", keys)
 	}
 
 	applyFuture := server.raft.Apply(b, 500*time.Millisecond)

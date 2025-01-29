@@ -31,12 +31,12 @@ type Delegate struct {
 }
 
 type DelegateOpts struct {
-	config         config.Config
-	broadcastQueue *memberlist.TransmitLimitedQueue
-	addVoter       func(id raft.ServerID, address raft.ServerAddress, prevIndex uint64, timeout time.Duration) error
-	isRaftLeader   func() bool
-	applyMutate    func(ctx context.Context, cmd []string) ([]byte, error)
-	applyDeleteKey func(ctx context.Context, key string) error
+	config          config.Config
+	broadcastQueue  *memberlist.TransmitLimitedQueue
+	addVoter        func(id raft.ServerID, address raft.ServerAddress, prevIndex uint64, timeout time.Duration) error
+	isRaftLeader    func() bool
+	applyMutate     func(ctx context.Context, cmd []string) ([]byte, error)
+	applyDeleteKeys func(ctx context.Context, keys []string) error
 }
 
 func NewDelegate(opts DelegateOpts) *Delegate {
@@ -83,7 +83,7 @@ func (delegate *Delegate) NotifyMsg(msgBytes []byte) {
 			log.Println(err)
 		}
 
-	case "DeleteKey":
+	case "DeleteKeys":
 		// If the current node is not a cluster leader, re-broadcast the message.
 		if !delegate.options.isRaftLeader() {
 			delegate.options.broadcastQueue.QueueBroadcast(&msg)
@@ -94,9 +94,12 @@ func (delegate *Delegate) NotifyMsg(msgBytes []byte) {
 			context.WithValue(context.Background(), internal.ContextServerID("ServerID"), string(msg.ServerID)),
 			internal.ContextConnID("ConnectionID"), msg.ConnId)
 
-		key := string(msg.Content)
+		var keys []string
+		if err := json.Unmarshal(msg.Content, &keys); err != nil {
+			log.Println(err)
+		}
 
-		if err := delegate.options.applyDeleteKey(ctx, key); err != nil {
+		if err := delegate.options.applyDeleteKeys(ctx, keys); err != nil {
 			log.Println(err)
 		}
 

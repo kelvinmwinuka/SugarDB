@@ -216,10 +216,10 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			FinishSnapshot:        sugarDB.finishSnapshot,
 			SetLatestSnapshotTime: sugarDB.setLatestSnapshot,
 			GetHandlerFuncParams:  sugarDB.getHandlerFuncParams,
-			DeleteKey: func(ctx context.Context, key string) error {
+			DeleteKeys: func(ctx context.Context, keys []string) error {
 				sugarDB.storeLock.Lock()
 				defer sugarDB.storeLock.Unlock()
-				return sugarDB.deleteKey(ctx, key)
+				return sugarDB.deleteKeys(ctx, keys)
 			},
 			GetState: func() map[int]map[string]internal.KeyData {
 				state := make(map[int]map[string]internal.KeyData)
@@ -240,7 +240,7 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			RemoveRaftServer: sugarDB.raft.RemoveServer,
 			IsRaftLeader:     sugarDB.raft.IsRaftLeader,
 			ApplyMutate:      sugarDB.raftApplyCommand,
-			ApplyDeleteKey:   sugarDB.raftApplyDeleteKey,
+			ApplyDeleteKeys:  sugarDB.raftApplyDeleteKeys,
 		})
 	} else {
 		// Set up standalone snapshot engine

@@ -172,6 +172,8 @@ func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]
 
 	values := make(map[string]interface{}, len(keys))
 
+	var keysToDelete []string
+
 	for _, key := range keys {
 		entry, ok := server.store[database][key]
 		if !ok {
@@ -180,29 +182,31 @@ func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]
 		}
 
 		if entry.ExpireAt != (time.Time{}) && entry.ExpireAt.Before(server.clock.Now()) {
-			if !server.isInCluster() {
-				// If in standalone mode, delete the key directly.
-				err := server.deleteKey(ctx, key)
-				if err != nil {
-					log.Printf("keyExists: %+v\n", err)
-				}
-			} else if server.isInCluster() && server.raft.IsRaftLeader() {
-				// If we're in a raft cluster, and we're the leader, send command to delete the key in the cluster.
-				err := server.raftApplyDeleteKey(ctx, key)
-				if err != nil {
-					log.Printf("keyExists: %+v\n", err)
-				}
-			} else if server.isInCluster() && !server.raft.IsRaftLeader() {
-				// Forward message to leader to initiate key deletion.
-				// This is always called regardless of ForwardCommand config value
-				// because we always want to remove expired keys.
-				server.memberList.ForwardDeleteKey(ctx, key)
-			}
+			keysToDelete = append(keysToDelete, key)
 			values[key] = nil
 			continue
 		}
 
 		values[key] = entry.Value
+	}
+
+	if !server.isInCluster() {
+		// If in standalone mode, delete the key directly.
+		err := server.deleteKeys(ctx, keysToDelete)
+		if err != nil {
+			log.Printf("keyExists: %+v\n", err)
+		}
+	} else if server.isInCluster() && server.raft.IsRaftLeader() {
+		// If we're in a raft cluster, and we're the leader, send command to delete the key in the cluster.
+		err := server.raftApplyDeleteKeys(ctx, keys)
+		if err != nil {
+			log.Printf("keyExists: %+v\n", err)
+		}
+	} else if server.isInCluster() && !server.raft.IsRaftLeader() {
+		// Forward message to leader to initiate key deletion.
+		// This is always called regardless of ForwardCommand config value
+		// because we always want to remove expired keys.
+		server.memberList.ForwardDeleteKeys(ctx, keys)
 	}
 
 	// Asynchronously update the keys in the cache.
@@ -320,38 +324,40 @@ func (server *SugarDB) setHashExpiry(ctx context.Context, key string, field stri
 	return nil
 }
 
-func (server *SugarDB) deleteKey(ctx context.Context, key string) error {
+func (server *SugarDB) deleteKeys(ctx context.Context, keys []string) error {
 	database := ctx.Value("Database").(int)
 
-	// Deduct memory usage in tracker.
-	data := server.store[database][key]
-	mem, err := data.GetMem()
-	if err != nil {
-		return err
+	for _, key := range keys {
+		// Deduct memory usage in tracker.
+		data := server.store[database][key]
+		mem, err := data.GetMem()
+		if err != nil {
+			return err
+		}
+		server.memUsed -= mem
+		server.memUsed -= int64(unsafe.Sizeof(key))
+		server.memUsed -= int64(len(key))
+
+		// Delete the key from keyLocks and store.
+		delete(server.store[database], key)
 	}
-	server.memUsed -= mem
-	server.memUsed -= int64(unsafe.Sizeof(key))
-	server.memUsed -= int64(len(key))
 
-	// Delete the key from keyLocks and store.
-	delete(server.store[database], key)
-
-	// Remove key from slice of keys associated with expiry.
+	// Remove keys from slice of keys associated with expiry.
 	server.keysWithExpiry.rwMutex.Lock()
 	defer server.keysWithExpiry.rwMutex.Unlock()
 	server.keysWithExpiry.keys[database] = slices.DeleteFunc(server.keysWithExpiry.keys[database], func(k string) bool {
-		return k == key
+		return slices.Contains(keys, k)
 	})
 
 	// Remove the key from the cache associated with the database.
 	switch {
 	case slices.Contains([]string{constants.AllKeysLFU, constants.VolatileLFU}, server.config.EvictionPolicy):
-		server.lfuCache.cache[database].Delete(key)
+		server.lfuCache.cache[database].Delete(keys)
 	case slices.Contains([]string{constants.AllKeysLRU, constants.VolatileLRU}, server.config.EvictionPolicy):
-		server.lruCache.cache[database].Delete(key)
+		server.lruCache.cache[database].Delete(keys)
 	}
 
-	log.Printf("deleted key %s\n", key)
+	log.Printf("deleted keys %+v\n", keys)
 
 	return nil
 }

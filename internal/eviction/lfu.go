@@ -123,12 +123,14 @@ func (cache *CacheLFU) Update(key string) {
 	heap.Fix(cache, entryIdx)
 }
 
-func (cache *CacheLFU) Delete(key string) {
-	entryIdx := slices.IndexFunc(cache.entries, func(entry *EntryLFU) bool {
-		return entry.key == key
-	})
-	if entryIdx > -1 {
-		heap.Remove(cache, cache.entries[entryIdx].index)
+func (cache *CacheLFU) Delete(keys []string) {
+	for _, key := range keys {
+		entryIdx := slices.IndexFunc(cache.entries, func(entry *EntryLFU) bool {
+			return entry.key == key
+		})
+		if entryIdx > -1 {
+			heap.Remove(cache, cache.entries[entryIdx].index)
+		}
 	}
 }
 

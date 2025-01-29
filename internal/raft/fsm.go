@@ -34,7 +34,7 @@ type FSMOpts struct {
 	GetCommand            func(command string) (internal.Command, error)
 	SetValues             func(ctx context.Context, entries map[string]interface{}) error
 	SetExpiry             func(ctx context.Context, key string, expire time.Time, touch bool)
-	DeleteKey             func(ctx context.Context, key string) error
+	DeleteKeys            func(ctx context.Context, key []string) error
 	StartSnapshot         func()
 	FinishSnapshot        func()
 	SetLatestSnapshotTime func(msec int64)
@@ -79,7 +79,7 @@ func (fsm *FSM) Apply(log *raft.Log) interface{} {
 			}
 
 		case "delete-key":
-			if err := fsm.options.DeleteKey(ctx, request.Key); err != nil {
+			if err := fsm.options.DeleteKeys(ctx, request.Keys); err != nil {
 				return internal.ApplyResponse{
 					Error:    err,
 					Response: nil,
