@@ -455,6 +455,7 @@ func (server *SugarDB) updateKeysInCache(ctx context.Context, keys []string) (in
 	errChan := make(chan error)
 	doneChan := make(chan struct{})
 
+	// TODO: Refactor this, do not spawn a goroutine for each database.
 	for db, _ := range server.store {
 		wg.Add(1)
 		ctx := context.WithValue(ctx, "Database", db)
@@ -506,6 +507,11 @@ func (server *SugarDB) adjustMemoryUsage(ctx context.Context) error {
 	// we're below the max memory limit.
 
 	log.Printf("Memory used: %v, Max Memory: %v", server.GetServerInfo().MemoryUsed, server.GetServerInfo().MaxMemory)
+
+	var keysToDelete []string
+	var clearedMem int64
+	var err error
+
 	switch {
 	case slices.Contains([]string{constants.AllKeysLFU, constants.VolatileLFU}, strings.ToLower(server.config.EvictionPolicy)):
 		// Remove keys from LFU cache until we're below the max memory limit or
@@ -515,29 +521,29 @@ func (server *SugarDB) adjustMemoryUsage(ctx context.Context) error {
 		for {
 			// Return if cache is empty
 			if server.lfuCache.cache[database].Len() == 0 {
-				return fmt.Errorf("adjustMemoryUsage -> LFU cache empty")
+				err = fmt.Errorf("adjustMemoryUsage -> LFU cache empty")
+				break
 			}
+
+			server.storeLock.RLock()
 
 			key := heap.Pop(server.lfuCache.cache[database]).(string)
-			if !server.isInCluster() {
-				// If in standalone mode, directly delete the key
-				if err := server.deleteKey(ctx, key); err != nil {
+			keysToDelete = append(keysToDelete, key)
+			data := server.store[database][key]
+			keyMem, e := data.GetMem()
 
-					log.Printf("Evicting key %v from database %v \n", key, database)
-					return fmt.Errorf("adjustMemoryUsage -> LFU cache eviction: %+v", err)
-				}
-			} else if server.isInCluster() && server.raft.IsRaftLeader() {
-				// If in raft cluster, send command to delete key from cluster
-				if err := server.raftApplyDeleteKey(ctx, key); err != nil {
+			server.storeLock.RUnlock()
 
-					return fmt.Errorf("adjustMemoryUsage -> LFU cache eviction: %+v", err)
-				}
+			if e != nil {
+				err = e
+				break
 			}
-			// Run garbage collection
-			runtime.GC()
+
+			clearedMem += keyMem
+
 			// Return if we're below max memory
-			if uint64(server.memUsed) < server.config.MaxMemory {
-				return nil
+			if uint64(server.memUsed)-uint64(clearedMem) < server.config.MaxMemory {
+				break
 			}
 		}
 	case slices.Contains([]string{constants.AllKeysLRU, constants.VolatileLRU}, strings.ToLower(server.config.EvictionPolicy)):
@@ -548,29 +554,29 @@ func (server *SugarDB) adjustMemoryUsage(ctx context.Context) error {
 		for {
 			// Return if cache is empty
 			if server.lruCache.cache[database].Len() == 0 {
-				return fmt.Errorf("adjustMemoryUsage -> LRU cache empty")
+				err = fmt.Errorf("adjustMemoryUsage -> LRU cache empty")
+				break
 			}
+
+			server.storeLock.RLock()
 
 			key := heap.Pop(server.lruCache.cache[database]).(string)
-			if !server.isInCluster() {
-				// If in standalone mode, directly delete the key.
-				if err := server.deleteKey(ctx, key); err != nil {
-					log.Printf("Evicting key %v from database %v \n", key, database)
-					return fmt.Errorf("adjustMemoryUsage -> LRU cache eviction: %+v", err)
-				}
-			} else if server.isInCluster() && server.raft.IsRaftLeader() {
-				// If in cluster mode and the node is a cluster leader,
-				// send command to delete the key from the cluster.
-				if err := server.raftApplyDeleteKey(ctx, key); err != nil {
-					return fmt.Errorf("adjustMemoryUsage -> LRU cache eviction: %+v", err)
-				}
+			keysToDelete = append(keysToDelete, key)
+			data := server.store[database][key]
+			keyMem, e := data.GetMem()
+
+			server.storeLock.RUnlock()
+
+			if e != nil {
+				err = e
+				break
 			}
 
-			// Run garbage collection
-			runtime.GC()
+			clearedMem += keyMem
+
 			// Return if we're below max memory
-			if uint64(server.memUsed) < server.config.MaxMemory {
-				return nil
+			if uint64(server.memUsed)-uint64(clearedMem) < server.config.MaxMemory {
+				break
 			}
 		}
 	case slices.Contains([]string{constants.AllKeysRandom}, strings.ToLower(server.config.EvictionPolicy)):
@@ -590,14 +596,12 @@ func (server *SugarDB) adjustMemoryUsage(ctx context.Context) error {
 						if idx == 0 {
 							if !server.isInCluster() {
 								// If in standalone mode, directly delete the key
-								if err := server.deleteKey(ctx, key); err != nil {
+								if err := server.deleteKeys(ctx, []string{key}); err != nil {
 									log.Printf("Evicting key %v from database %v \n", key, db)
-
 									return fmt.Errorf("adjustMemoryUsage -> all keys random: %+v", err)
 								}
 							} else if server.isInCluster() && server.raft.IsRaftLeader() {
-								if err := server.raftApplyDeleteKey(ctx, key); err != nil {
-
+								if err := server.raftApplyDeleteKeys(ctx, []string{key}); err != nil {
 									return fmt.Errorf("adjustMemoryUsage -> all keys random: %+v", err)
 								}
 							}
@@ -625,28 +629,40 @@ func (server *SugarDB) adjustMemoryUsage(ctx context.Context) error {
 
 			if !server.isInCluster() {
 				// If in standalone mode, directly delete the key
-				if err := server.deleteKey(ctx, key); err != nil {
+				if err := server.deleteKeys(ctx, []string{key}); err != nil {
 					log.Printf("Evicting key %v from database %v \n", key, database)
-
 					return fmt.Errorf("adjustMemoryUsage -> volatile keys random: %+v", err)
 				}
 			} else if server.isInCluster() && server.raft.IsRaftLeader() {
-				if err := server.raftApplyDeleteKey(ctx, key); err != nil {
-
+				if err := server.raftApplyDeleteKeys(ctx, []string{key}); err != nil {
 					return fmt.Errorf("adjustMemoryUsage -> volatile keys randome: %+v", err)
 				}
 			}
-
-			// Run garbage collection
-			runtime.GC()
-			// Return if we're below max memory
+			// Return if we're below max memory.
 			if uint64(server.memUsed) < server.config.MaxMemory {
 				return nil
 			}
 		}
-	default:
-		return nil
 	}
+
+	if err != nil {
+		return err
+	}
+
+	if !server.isInCluster() {
+		// If in standalone mode, directly delete the key
+		if err := server.deleteKeys(ctx, keysToDelete); err != nil {
+			log.Printf("Evicting key %v from database %v \n", keysToDelete, database)
+			return fmt.Errorf("adjustMemoryUsage -> LFU cache eviction: %+v", err)
+		}
+	} else if server.isInCluster() && server.raft.IsRaftLeader() {
+		// If in raft cluster, send command to delete key from cluster
+		if err := server.raftApplyDeleteKeys(ctx, keysToDelete); err != nil {
+			return fmt.Errorf("adjustMemoryUsage -> LFU cache eviction: %+v", err)
+		}
+	}
+
+	return nil
 }
 
 // evictKeysWithExpiredTTL is a function that samples keys with an associated TTL
@@ -700,14 +716,14 @@ func (server *SugarDB) evictKeysWithExpiredTTL(ctx context.Context) error {
 		t := reflect.TypeOf(value)
 		if t.Kind() == reflect.Map {
 
-			hashkey, ok := server.store[database][k].Value.(hash.Hash)
+			hashKey, ok := server.store[database][k].Value.(hash.Hash)
 			if !ok {
-				return fmt.Errorf("Hash value should contain type HashValue, but type %s was found.", t.Elem().Name())
+				return fmt.Errorf("hash value should contain type HashValue, but type %s was found", t.Elem().Name())
 			}
 
-			for k, v := range hashkey {
+			for k, v := range hashKey {
 				if v.ExpireAt.Before(time.Now()) {
-					delete(hashkey, k)
+					delete(hashKey, k)
 				}
 			}
 
@@ -722,11 +738,11 @@ func (server *SugarDB) evictKeysWithExpiredTTL(ctx context.Context) error {
 		// Delete the expired key
 		deletedCount += 1
 		if !server.isInCluster() {
-			if err := server.deleteKey(ctx, k); err != nil {
+			if err := server.deleteKeys(ctx, []string{k}); err != nil {
 				return fmt.Errorf("evictKeysWithExpiredTTL -> standalone delete: %+v", err)
 			}
 		} else if server.isInCluster() && server.raft.IsRaftLeader() {
-			if err := server.raftApplyDeleteKey(ctx, k); err != nil {
+			if err := server.raftApplyDeleteKeys(ctx, []string{k}); err != nil {
 				return fmt.Errorf("evictKeysWithExpiredTTL -> cluster delete: %+v", err)
 			}
 		}
