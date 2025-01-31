@@ -39,6 +39,7 @@ import (
 	str "github.com/echovault/sugardb/internal/modules/string"
 	"github.com/echovault/sugardb/internal/raft"
 	"github.com/echovault/sugardb/internal/snapshot"
+	"github.com/echovault/sugardb/internal/store"
 	lua "github.com/yuin/gopher-lua"
 	"io"
 	"log"
@@ -71,12 +72,13 @@ type SugarDB struct {
 	}
 
 	// Global read-write mutex for entire store.
-	storeLock *sync.RWMutex
+	// storeLock *sync.RWMutex
 
 	// Data store to hold the keys and their associated data, expiry time, etc.
 	// The int key on the outer map represents the database index.
 	// Each database has a map that has a string key and the key data (value and expiry time).
-	store map[int]map[string]internal.KeyData
+	// store map[int]map[string]internal.KeyData
+	store *store.Store
 
 	// memUsed tracks the memory usage of the data in the store.
 	memUsed int64
@@ -153,9 +155,10 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 				Database: 0,
 			},
 		},
-		storeLock: &sync.RWMutex{},
-		store:     make(map[int]map[string]internal.KeyData),
-		memUsed:   0,
+		// storeLock: &sync.RWMutex{},
+		// store:   make(map[int]map[string]internal.KeyData),
+		store:   store.NewStore(8), // TODO: Make this configurable
+		memUsed: 0,
 		keysWithExpiry: struct {
 			rwMutex sync.RWMutex
 			keys    map[int][]string
@@ -217,20 +220,20 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			SetLatestSnapshotTime: sugarDB.setLatestSnapshot,
 			GetHandlerFuncParams:  sugarDB.getHandlerFuncParams,
 			DeleteKey: func(ctx context.Context, key string) error {
-				sugarDB.storeLock.Lock()
-				defer sugarDB.storeLock.Unlock()
+				// sugarDB.storeLock.Lock()
+				// defer sugarDB.storeLock.Unlock()
 				return sugarDB.deleteKey(ctx, key)
 			},
 			GetState: func() map[int]map[string]internal.KeyData {
-				state := make(map[int]map[string]internal.KeyData)
-				for database, store := range sugarDB.getState() {
-					for k, v := range store {
-						if data, ok := v.(internal.KeyData); ok {
-							state[database][k] = data
-						}
-					}
-				}
-				return state
+				// state := make(map[int]map[string]internal.KeyData)
+				// for database, store := range sugarDB.getState() {
+				// 	for k, v := range store {
+				// 		if data, ok := v.(internal.KeyData); ok {
+				// 			state[database][k] = data
+				// 		}
+				// 	}
+				// }
+				return map[int]map[string]internal.KeyData{}
 			},
 		})
 		sugarDB.memberList = memberlist.NewMemberList(memberlist.Opts{
@@ -255,14 +258,14 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			snapshot.WithGetLatestSnapshotTimeFunc(sugarDB.getLatestSnapshotTime),
 			snapshot.WithGetStateFunc(func() map[int]map[string]internal.KeyData {
 				state := make(map[int]map[string]internal.KeyData)
-				for database, data := range sugarDB.getState() {
-					state[database] = make(map[string]internal.KeyData)
-					for key, value := range data {
-						if keyData, ok := value.(internal.KeyData); ok {
-							state[database][key] = keyData
-						}
-					}
-				}
+				// for database, data := range sugarDB.getState() {
+				// 	state[database] = make(map[string]internal.KeyData)
+				// 	for key, value := range data {
+				// 		if keyData, ok := value.(internal.KeyData); ok {
+				// 			state[database][key] = keyData
+				// 		}
+				// 	}
+				// }
 				return state
 			}),
 			snapshot.WithSetKeyDataFunc(func(database int, key string, data internal.KeyData) {
@@ -685,9 +688,10 @@ func (server *SugarDB) initialiseCaches() {
 		mutex: &sync.Mutex{},
 		cache: make(map[int]*eviction.CacheLRU),
 	}
+
 	// Initialise caches for each preloaded database.
-	for database, _ := range server.store {
-		server.lfuCache.cache[database] = eviction.NewCacheLFU()
-		server.lruCache.cache[database] = eviction.NewCacheLRU()
-	}
+	// for database, _ := range server.store {
+	// 	server.lfuCache.cache[database] = eviction.NewCacheLFU()
+	// 	server.lruCache.cache[database] = eviction.NewCacheLRU()
+	// }
 }

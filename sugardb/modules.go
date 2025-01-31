@@ -60,18 +60,18 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 		GetACL:                server.getACL,
 		GetAllCommands:        server.getCommands,
 		GetClock:              server.getClock,
-		Flush:                 server.Flush,
-		RandomKey:             server.randomKey,
-		DBSize:                server.dbSize,
-		TouchKey:              server.updateKeysInCache,
-		GetObjectFrequency:    server.getObjectFreq,
-		GetObjectIdleTime:     server.getObjectIdleTime,
-		SwapDBs:               server.SwapDBs,
-		GetServerInfo:         server.GetServerInfo,
-		AddScript:             server.AddScript,
+		// Flush:                 server.Flush,
+		RandomKey: server.randomKey,
+		DBSize:    server.dbSize,
+		// TouchKey:           server.updateKeysInCache,
+		GetObjectFrequency: server.getObjectFreq,
+		GetObjectIdleTime:  server.getObjectIdleTime,
+		SwapDBs:            server.SwapDBs,
+		GetServerInfo:      server.GetServerInfo,
+		AddScript:          server.AddScript,
 		DeleteKey: func(ctx context.Context, key string) error {
-			server.storeLock.Lock()
-			defer server.storeLock.Unlock()
+			// server.storeLock.Lock()
+			// defer server.storeLock.Unlock()
 			return server.deleteKey(ctx, key)
 		},
 		GetConnectionInfo: func(conn *net.Conn) internal.ConnectionInfo {
@@ -92,13 +92,6 @@ func (server *SugarDB) getHandlerFuncParams(ctx context.Context, cmd []string, c
 			if clientname != "" {
 				info.Name = clientname
 			}
-
-			// If the database index does not exist, create the new database.
-			server.storeLock.Lock()
-			if server.store[database] == nil {
-				server.createDatabase(database)
-			}
-			server.storeLock.Unlock()
 
 			// Set database index for the current connection.
 			info.Database = database

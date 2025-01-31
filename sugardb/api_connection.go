@@ -54,12 +54,7 @@ func (server *SugarDB) SelectDB(database int) error {
 	if database < 0 {
 		return errors.New("database index must be 0 or higher")
 	}
-	// If the database index does not exist, create the new database.
-	server.storeLock.Lock()
-	if server.store[database] == nil {
-		server.createDatabase(database)
-	}
-	server.storeLock.Unlock()
+	// TODO: Do check for is the database is within range
 
 	// Set the DB.
 	server.connInfo.mut.Lock()
