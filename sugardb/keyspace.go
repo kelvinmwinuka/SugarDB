@@ -65,50 +65,47 @@ func (server *SugarDB) SwapDBs(database1, database2 int) {
 
 // Flush flushes all the data from the database at the specified index.
 // When -1 is passed, all the logical databases are cleared.
-// TODO: Uncomment this
-// func (server *SugarDB) Flush(database int) {
-// 	// server.storeLock.Lock()
-// 	// defer server.storeLock.Unlock()
-//
-// 	server.keysWithExpiry.rwMutex.Lock()
-// 	defer server.keysWithExpiry.rwMutex.Unlock()
-//
-// 	if database == -1 {
-// 		for db, _ := range server.store {
-// 			// Clear db store.
-// 			clear(server.store[db])
-// 			// Clear db volatile key tracker.
-// 			clear(server.keysWithExpiry.keys[db])
-// 			// Clear db LFU cache.
-// 			server.lfuCache.cache[db].Mutex.Lock()
-// 			server.lfuCache.cache[db].Flush()
-// 			server.lfuCache.cache[db].Mutex.Unlock()
-// 			// Clear db LRU cache.
-// 			server.lruCache.cache[db].Mutex.Lock()
-// 			server.lruCache.cache[db].Flush()
-// 			server.lruCache.cache[db].Mutex.Unlock()
-// 		}
-// 		return
-// 	}
-//
-// 	// Clear db store.
-// 	clear(server.store[database])
-// 	// Clear db volatile key tracker.
-// 	clear(server.keysWithExpiry.keys[database])
-// 	// Clear db LFU cache.
-// 	server.lfuCache.cache[database].Mutex.Lock()
-// 	server.lfuCache.cache[database].Flush()
-// 	server.lfuCache.cache[database].Mutex.Unlock()
-// 	// Clear db LRU cache.
-// 	server.lruCache.cache[database].Mutex.Lock()
-// 	server.lruCache.cache[database].Flush()
-// 	server.lruCache.cache[database].Mutex.Unlock()
-// }
+func (server *SugarDB) Flush(database int) {
+	server.keysWithExpiry.rwMutex.Lock()
+	defer server.keysWithExpiry.rwMutex.Unlock()
+
+	// TODO: Handle flushing all databases and caches
+	// if database == -1 {
+	// 	for db, _ := range server.store {
+	// 		// Clear db store.
+	// 		clear(server.store[db])
+	// 		// Clear db volatile key tracker.
+	// 		clear(server.keysWithExpiry.keys[db])
+	// 		// Clear db LFU cache.
+	// 		server.lfuCache.cache[db].Mutex.Lock()
+	// 		server.lfuCache.cache[db].Flush()
+	// 		server.lfuCache.cache[db].Mutex.Unlock()
+	// 		// Clear db LRU cache.
+	// 		server.lruCache.cache[db].Mutex.Lock()
+	// 		server.lruCache.cache[db].Flush()
+	// 		server.lruCache.cache[db].Mutex.Unlock()
+	// 	}
+	// 	return
+	// }
+
+	// Clear db store.
+	server.store.Flush(database)
+
+	// Clear db volatile key tracker.
+	clear(server.keysWithExpiry.keys[database])
+
+	// Clear db LFU cache.
+	server.lfuCache.cache[database].Mutex.Lock()
+	server.lfuCache.cache[database].Flush()
+	server.lfuCache.cache[database].Mutex.Unlock()
+
+	// Clear db LRU cache.
+	server.lruCache.cache[database].Mutex.Lock()
+	server.lruCache.cache[database].Flush()
+	server.lruCache.cache[database].Mutex.Unlock()
+}
 
 func (server *SugarDB) keysExist(ctx context.Context, keys []string) map[string]bool {
-	// server.storeLock.RLock()
-	// defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	exists := make(map[string]bool, len(keys))
@@ -122,9 +119,6 @@ func (server *SugarDB) keysExist(ctx context.Context, keys []string) map[string]
 }
 
 func (server *SugarDB) getExpiry(ctx context.Context, key string) time.Time {
-	// server.storeLock.RLock()
-	// defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	entry, ok := server.store.Get(database, key)
@@ -136,9 +130,6 @@ func (server *SugarDB) getExpiry(ctx context.Context, key string) time.Time {
 }
 
 func (server *SugarDB) getHashExpiry(ctx context.Context, key string, field string) time.Time {
-	// server.storeLock.RLock()
-	// defer server.storeLock.RUnlock()
-
 	database := ctx.Value("Database").(int)
 
 	entry, ok := server.store.Get(database, key)
@@ -152,9 +143,6 @@ func (server *SugarDB) getHashExpiry(ctx context.Context, key string, field stri
 }
 
 func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]interface{} {
-	// server.storeLock.Lock()
-	// defer server.storeLock.Unlock()
-
 	database := ctx.Value("Database").(int)
 
 	values := make(map[string]interface{}, len(keys))
@@ -204,11 +192,8 @@ func (server *SugarDB) getValues(ctx context.Context, keys []string) map[string]
 }
 
 func (server *SugarDB) setValues(ctx context.Context, entries map[string]interface{}) error {
-	// server.storeLock.Lock()
-	// defer server.storeLock.Unlock()
-
-	if internal.IsMaxMemoryExceeded(server.memUsed, server.config.MaxMemory) && server.config.EvictionPolicy == constants.NoEviction {
-
+	if internal.IsMaxMemoryExceeded(server.memUsed, server.config.MaxMemory) &&
+		server.config.EvictionPolicy == constants.NoEviction {
 		return errors.New("max memory reached, key value not set")
 	}
 
@@ -249,9 +234,6 @@ func (server *SugarDB) setValues(ctx context.Context, entries map[string]interfa
 }
 
 func (server *SugarDB) setExpiry(ctx context.Context, key string, expireAt time.Time, touch bool) {
-	// server.storeLock.Lock()
-	// defer server.storeLock.Unlock()
-
 	database := ctx.Value("Database").(int)
 
 	curr, _ := server.store.Get(database, key)
@@ -280,9 +262,6 @@ func (server *SugarDB) setExpiry(ctx context.Context, key string, expireAt time.
 }
 
 func (server *SugarDB) setHashExpiry(ctx context.Context, key string, field string, expireAt time.Time) error {
-	// server.storeLock.Lock()
-	// defer server.storeLock.Unlock()
-
 	database := ctx.Value("Database").(int)
 
 	data, exists := server.store.Get(database, key)
@@ -657,10 +636,7 @@ func (server *SugarDB) evictKeysWithExpiredTTL(ctx context.Context) error {
 	server.keysWithExpiry.rwMutex.RUnlock()
 
 	// Loop through the keys and delete them if they're expired
-	// server.storeLock.Lock()
-	// defer server.storeLock.Unlock()
 	for _, k := range keys {
-
 		// handle keys within a hash type value
 		curr, _ := server.store.Get(database, key)
 		t := reflect.TypeOf(curr.Value)
@@ -719,45 +695,13 @@ func (server *SugarDB) evictKeysWithExpiredTTL(ctx context.Context) error {
 }
 
 func (server *SugarDB) randomKey(ctx context.Context) string {
-	// server.storeLock.RLock()
-	// defer server.storeLock.RUnlock()
-
-	// database := ctx.Value("Database").(int)
-
-	// _max := len(server.store[database])
-	// if _max == 0 {
-	// 	return ""
-	// }
-	//
-	// randnum := rand.Intn(_max)
-	// i := 0
-	// var randkey string
-	//
-	// for key, _ := range server.store[database] {
-	// 	if i == randnum {
-	// 		randkey = key
-	// 		break
-	// 	} else {
-	// 		i++
-	// 	}
-	//
-	// }
-	//
-	// return randkey
-
-	// TODO: Dummy return, we will have to update this implementation
-	return "random"
+	database := ctx.Value("Database").(int)
+	return server.store.RandomKey(database)
 }
 
 func (server *SugarDB) dbSize(ctx context.Context) int {
-	// server.storeLock.RLock()
-	// defer server.storeLock.RUnlock()
-
-	// database := ctx.Value("Database").(int)
-	// return len(server.store[database])
-
-	// TODO: Return placeholder size for now.
-	return 100
+	database := ctx.Value("Database").(int)
+	return server.store.DBSize(database)
 }
 
 func (server *SugarDB) getObjectFreq(ctx context.Context, key string) (int, error) {

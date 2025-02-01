@@ -15,7 +15,10 @@
 package store
 
 import (
+	"github.com/cespare/xxhash/v2"
 	"github.com/echovault/sugardb/internal"
+	"math/rand"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -41,11 +44,8 @@ func newLockFreeInnerMap(size int) *lockFreeInnerMap {
 
 // Hash function for the database/keyspace
 func (m *lockFreeInnerMap) hash(key string) int {
-	hash := 0
-	for i := 0; i < len(key); i++ {
-		hash = (hash*31 + int(key[i])) % m.size
-	}
-	return hash
+	hash := xxhash.Sum64([]byte(key)) // Generate 64-bit hash
+	return int(hash % uint64(m.size)) // Map to bucket range
 }
 
 // Store the value in the database/keyspace
@@ -109,5 +109,61 @@ func (m *lockFreeInnerMap) Delete(key string) bool {
 		}
 
 		return false // Key not found
+	}
+}
+
+func (m *lockFreeInnerMap) flush() {
+	newBuckets := make([]*atomic.Pointer[dataNode], m.size)
+	for i, _ := range newBuckets {
+		newBuckets[i] = &atomic.Pointer[dataNode]{}
+	}
+	atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&m.buckets)), unsafe.Pointer(&newBuckets))
+}
+
+func (m *lockFreeInnerMap) dbSize() int {
+	var total atomic.Int64
+
+	wg := sync.WaitGroup{}
+	for i := 0; i < m.size; i++ {
+		wg.Add(1)
+		go func(bucketIdx int) {
+			node := m.buckets[bucketIdx].Load()
+			for node != nil {
+				mem, _ := node.value.GetMem()
+				total.Add(mem)
+				node = node.next
+			}
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	return int(total.Load())
+}
+
+func (m *lockFreeInnerMap) randomKey() string {
+	// Pick a random bucket
+	for {
+		index := rand.Intn(m.size)
+
+		head := m.buckets[index].Load()
+		if head == nil {
+			continue // Retry if head in nil
+		}
+
+		// Count the nodes in the linked list
+		var count int
+		for node := head; node != nil; node = node.next {
+			count++
+		}
+
+		// Pick a random node
+		randomIndex := rand.Intn(count)
+		current := head
+		for i := 0; i < randomIndex; i++ {
+			current = current.next
+		}
+
+		return current.key
 	}
 }

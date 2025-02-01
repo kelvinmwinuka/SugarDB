@@ -38,7 +38,7 @@ func (s *Store) Set(database int, key string, value internal.KeyData) {
 
 		// If no database exists, create a new one
 		if innerMap == nil {
-			newInnerMap := newLockFreeInnerMap(8) // TODO: make this configurable
+			newInnerMap := newLockFreeInnerMap(4096) // TODO: make this configurable
 			if s.buckets[database].CompareAndSwap(nil, newInnerMap) {
 				innerMap = newInnerMap
 			} else {
@@ -66,4 +66,19 @@ func (s *Store) Del(database int, key string) bool {
 		return false
 	}
 	return innerMap.Delete(key)
+}
+
+func (s *Store) Flush(database int) {
+	innerMap := s.buckets[database].Load()
+	innerMap.flush()
+}
+
+func (s *Store) DBSize(database int) int {
+	innerMap := s.buckets[database].Load()
+	return innerMap.dbSize()
+}
+
+func (s *Store) RandomKey(database int) string {
+	innerMap := s.buckets[database].Load()
+	return innerMap.randomKey()
 }

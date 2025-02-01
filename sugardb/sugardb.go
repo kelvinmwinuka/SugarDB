@@ -219,11 +219,7 @@ func NewSugarDB(options ...func(sugarDB *SugarDB)) (*SugarDB, error) {
 			FinishSnapshot:        sugarDB.finishSnapshot,
 			SetLatestSnapshotTime: sugarDB.setLatestSnapshot,
 			GetHandlerFuncParams:  sugarDB.getHandlerFuncParams,
-			DeleteKey: func(ctx context.Context, key string) error {
-				// sugarDB.storeLock.Lock()
-				// defer sugarDB.storeLock.Unlock()
-				return sugarDB.deleteKey(ctx, key)
-			},
+			DeleteKey:             sugarDB.deleteKey,
 			GetState: func() map[int]map[string]internal.KeyData {
 				// state := make(map[int]map[string]internal.KeyData)
 				// for database, store := range sugarDB.getState() {
