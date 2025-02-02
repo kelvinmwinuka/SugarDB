@@ -75,7 +75,6 @@ func (m *lockFreeInnerMap) Lookup(key string) (internal.KeyData, bool) {
 
 func (m *lockFreeInnerMap) Delete(key string) bool {
 	index := m.hash(key)
-
 	for {
 		head := m.buckets[index].Load()
 		if head == nil {
@@ -113,9 +112,9 @@ func (m *lockFreeInnerMap) Delete(key string) bool {
 }
 
 func (m *lockFreeInnerMap) flush() {
-	newBuckets := make([]*atomic.Pointer[dataNode], m.size)
+	newBuckets := make([]*atomic.Pointer[DBSkipList], m.size)
 	for i, _ := range newBuckets {
-		newBuckets[i] = &atomic.Pointer[dataNode]{}
+		newBuckets[i] = &atomic.Pointer[DBSkipList]{}
 	}
 	atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&m.buckets)), unsafe.Pointer(&newBuckets))
 }
@@ -143,6 +142,7 @@ func (m *lockFreeInnerMap) dbSize() int {
 
 func (m *lockFreeInnerMap) randomKey() string {
 	// Pick a random bucket
+
 	for {
 		index := rand.Intn(m.size)
 
