@@ -112,9 +112,9 @@ func (m *lockFreeInnerMap) Delete(key string) bool {
 }
 
 func (m *lockFreeInnerMap) flush() {
-	newBuckets := make([]*atomic.Pointer[DBSkipList], m.size)
+	newBuckets := make([]*atomic.Pointer[dataNode], m.size)
 	for i, _ := range newBuckets {
-		newBuckets[i] = &atomic.Pointer[DBSkipList]{}
+		newBuckets[i] = &atomic.Pointer[dataNode]{}
 	}
 	atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&m.buckets)), unsafe.Pointer(&newBuckets))
 }
